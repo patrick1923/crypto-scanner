@@ -4,19 +4,25 @@ import ccxt
 import ccxt.pro as ccxt_pro
 import asyncio
 from datetime import timezone
-import database as db
+import database as db  # Make sure you have your database.py file
 
 # ==============================================================================
 # Initial Setup
 # ==============================================================================
 db.create_table()
-st.set_page_config(
-    page_title="High-Speed Market Scanner & Trade Planner", page_icon="⚡", layout="wide")
-st.title('⚡ High-Speed Market Scanner & Trade Planner')
-st.caption("Now with a real-time Market Pulse indicator.")
 
-# (The Account Connection & State Management section remains unchanged)
-# ... (Same as before)
+st.set_page_config(
+    page_title="High-Speed Market Scanner & Trade Planner",
+    page_icon="⚡",
+    layout="wide",
+)
+
+st.title('⚡ High-Speed Market Scanner & Trade Planner')
+st.caption("Now with historical data logging and analysis.")
+
+# ==============================================================================
+# Account Connection & State Management
+# ==============================================================================
 if 'connected' not in st.session_state:
     st.session_state.connected = False
 if 'usdt_balance' not in st.session_state:
@@ -25,11 +31,13 @@ if 'api_key' not in st.session_state:
     st.session_state.api_key = ''
 if 'api_secret' not in st.session_state:
     st.session_state.api_secret = ''
+
 with st.expander("🔗 Connect to Your Binance Account"):
     api_key = st.text_input(
         "API Key", value=st.session_state.api_key, key="api_key_input")
     api_secret = st.text_input("API Secret", type="password",
                                value=st.session_state.api_secret, key="api_secret_input")
+
     if st.button("Connect & Check Balance"):
         if not api_key or not api_secret:
             st.warning("Please enter both API Key and API Secret.")
@@ -53,8 +61,55 @@ with st.expander("🔗 Connect to Your Binance Account"):
                 st.error(f"An error occurred: {e}")
                 st.session_state.connected = False
 
+# ==============================================================================
+# RESTORED: Function to Fetch Live Account Data
+# ==============================================================================
+
+
+def fetch_account_data():
+    """Fetches live positions and account health metrics."""
+    if not st.session_state.connected:
+        return None, None
+    try:
+        exchange = ccxt.binance({'apiKey': st.session_state.api_key,
+                                'secret': st.session_state.api_secret, 'options': {'defaultType': 'future'}})
+        balance_data = exchange.fetch_balance()
+        margin_ratio = balance_data['info'].get('marginRatio', '0')
+        maint_margin = balance_data['info'].get('totalMaintMargin', '0')
+        account_health = {'margin_ratio': float(
+            margin_ratio) * 100, 'maint_margin': float(maint_margin)}
+        positions_raw = exchange.fetch_positions()
+        open_positions = [
+            p for p in positions_raw if float(p['contracts']) > 0]
+        positions_data = [{'Symbol': p['symbol'], 'Side': p['side'].capitalize(), 'Size': p['contracts'], 'Entry Price': p['entryPrice'],
+                           'Mark Price': p['markPrice'], 'Unrealized PnL': p['unrealizedPnl']} for p in open_positions]
+        return pd.DataFrame(positions_data), account_health
+    except Exception as e:
+        st.sidebar.error(f"Failed to fetch account data.")
+        return None, None
+
+
+# ==============================================================================
+# RESTORED: Sidebar Display (with Account Health)
+# ==============================================================================
+positions_df, health_data = None, None
+if st.session_state.connected:
+    positions_df, health_data = fetch_account_data()
+    with st.sidebar:
+        st.success(
+            f"Connected ✅\n\nBalance: {st.session_state.usdt_balance:,.2f} USDT")
+        if health_data:
+            st.metric("Maintenance Margin",
+                      f"${health_data['maint_margin']:,.2f}")
+            st.metric("Margin Ratio", f"{health_data['margin_ratio']:.2f}%")
+            if health_data['margin_ratio'] > 80:
+                st.warning("⚠️ Margin Ratio is high! Risk of liquidation.")
+            else:
+                st.info("Margin Ratio is safe.")
+else:
+    st.sidebar.warning("Not Connected 🔴")
+
 # (The Data Fetching & Analysis section remains unchanged)
-# ... (Same as before)
 
 
 async def analyze_symbol_2h(exchange, symbol):
@@ -122,60 +177,12 @@ async def scan_all_markets():
     finally:
         await exchange.close()
 
-# --- MODIFIED: Scan is now run before the UI is drawn to get Market Pulse data ---
-placeholder = st.empty()
-with placeholder.container():
-    st.info("🚀 Starting the high-speed scan... This will take a few seconds.")
-df = run_scanner()
-
-# Calculate pump/dump candidates and counts
-num_pumps, num_dumps = 0, 0
-if not df.empty:
-    pump_candidates = df[(df['Price Change (2h) %'] > 2) & (df['Volume Ratio (2h)'] > 2.0) & (
-        df['Dominant Pressure'] == '📈 Buyer') & (df['High 24h Volume'] == True) & (df['Volatility Contraction'] == True)]
-    dump_candidates = df[(df['Price Change (2h) %'] < -2) & (df['Volume Ratio (2h)'] > 2.0) & (df['Dominant Pressure']
-                                                                                               == '📉 Seller') & (df['High 24h Volume'] == True) & (df['Volatility Contraction'] == True)]
-    num_pumps = len(pump_candidates)
-    num_dumps = len(dump_candidates)
-    # Log signals to database
-    if not pump_candidates.empty:
-        db.log_signals(pump_candidates, 'Pump')
-    if not dump_candidates.empty:
-        db.log_signals(dump_candidates, 'Dump')
-
-# ==============================================================================
-# Sidebar Display (with Account Health and Market Pulse)
-# ==============================================================================
-positions_df, health_data = None, None
-if st.session_state.connected:
-    positions_df, health_data = fetch_account_data()
-
-with st.sidebar:
-    if st.session_state.connected:
-        st.success(
-            f"Connected ✅\n\nBalance: {st.session_state.usdt_balance:,.2f} USDT")
-        if health_data:
-            st.metric("Maintenance Margin",
-                      f"${health_data['maint_margin']:,.2f}")
-            st.metric("Margin Ratio", f"{health_data['margin_ratio']:.2f}%")
-            if health_data['margin_ratio'] > 80:
-                st.warning("⚠️ Margin Ratio is high!")
-            else:
-                st.info("Margin Ratio is safe.")
-    else:
-        st.sidebar.warning("Not Connected 🔴")
-
-    # --- NEW: Market Pulse Indicator ---
-    st.write("---")
-    st.subheader("🌡️ Market Pulse (Last 2h)")
-    st.metric("Pump Signals Found", f"{num_pumps} 🟢")
-    st.metric("Dump Signals Found", f"{num_dumps} 🔴")
-
 # ==============================================================================
 # Main UI Display (Scanner + Live Positions)
 # ==============================================================================
 st.write("---")
 
+# --- RESTORED: Live Positions Dashboard ---
 if st.session_state.connected:
     st.header("📊 Live Positions Dashboard")
     if positions_df is not None and not positions_df.empty:
@@ -186,34 +193,50 @@ if st.session_state.connected:
         st.info("You have no open positions.")
     st.write("---")
 
-# Display the main scanner UI
-if not df.empty:
-    placeholder.success(f"✅ Scan complete! Analyzed {len(df)} pairs.")
-    filter_option = st.radio("Filter Results:", ("Show All",
-                             "Show Pump Candidates", "Show Dump Candidates"), horizontal=True)
-    df_to_display = df
-    if filter_option == "Show Pump Candidates":
-        df_to_display = pump_candidates
-    elif filter_option == "Show Dump Candidates":
-        df_to_display = dump_candidates
-    if not df_to_display.empty:
-        display_columns = ['Symbol', 'Price', 'Signal Time', 'Confidence Score',
-                           'Price Change (2h) %', 'Volume Ratio (2h)', '24h Volume', 'Volatility Contraction', 'Dominant Pressure']
-        df_sorted = df_to_display.sort_values(
-            by='Confidence Score', ascending=False)
-        styled_df = df_sorted[display_columns].style.format({'Price': '{:,.4f}', 'Signal Time': lambda t: t.strftime('%Y-%m-%d %H:%M'), 'Confidence Score': '{:,.0f}%', 'Price Change (2h) %': '{:.2f}%', 'Volume Ratio (2h)': '{:.2f}x',
-                                                            '24h Volume': '{:,.0f} USDT', 'Volatility Contraction': lambda v: "✅ Yes" if v else "❌ No"}).background_gradient(cmap='Greens', subset=['Confidence Score']).background_gradient(cmap='coolwarm', subset=['Price Change (2h) %'])
-        st.dataframe(styled_df, width='stretch', height=500, hide_index=True)
-    else:
-        st.warning("No pairs currently meet the selected filter criteria.")
-else:
-    placeholder.error("An error occurred during the scan.")
+placeholder = st.empty()
+placeholder.info(
+    "🚀 Starting the high-speed scan... This will take a few seconds.")
 
-# (The Trade Execution Planner and Historical Analysis sections remain unchanged)
-# ... (Same as before)
+try:
+    df = run_scanner()
+    if not df.empty:
+        placeholder.success(f"✅ Scan complete! Analyzed {len(df)} pairs.")
+        pump_candidates = df[(df['Price Change (2h) %'] > 2) & (df['Volume Ratio (2h)'] > 2.0) & (
+            df['Dominant Pressure'] == '📈 Buyer') & (df['High 24h Volume'] == True) & (df['Volatility Contraction'] == True)]
+        dump_candidates = df[(df['Price Change (2h) %'] < -2) & (df['Volume Ratio (2h)'] > 2.0) & (
+            df['Dominant Pressure'] == '📉 Seller') & (df['High 24h Volume'] == True) & (df['Volatility Contraction'] == True)]
+        if not pump_candidates.empty:
+            db.log_signals(pump_candidates, 'Pump')
+        if not dump_candidates.empty:
+            db.log_signals(dump_candidates, 'Dump')
+        filter_option = st.radio(
+            "Filter Results:", ("Show All", "Show Pump Candidates", "Show Dump Candidates"), horizontal=True)
+        df_to_display = df
+        if filter_option == "Show Pump Candidates":
+            df_to_display = pump_candidates
+        elif filter_option == "Show Dump Candidates":
+            df_to_display = dump_candidates
+        if not df_to_display.empty:
+            display_columns = ['Symbol', 'Price', 'Signal Time', 'Confidence Score',
+                               'Price Change (2h) %', 'Volume Ratio (2h)', '24h Volume', 'Volatility Contraction', 'Dominant Pressure']
+            df_sorted = df_to_display.sort_values(
+                by='Confidence Score', ascending=False)
+            styled_df = df_sorted[display_columns].style.format({'Price': '{:,.4f}', 'Signal Time': lambda t: t.strftime('%Y-%m-%d %H:%M'), 'Confidence Score': '{:,.0f}%', 'Price Change (2h) %': '{:.2f}%', 'Volume Ratio (2h)': '{:.2f}x',
+                                                                '24h Volume': '{:,.0f} USDT', 'Volatility Contraction': lambda v: "✅ Yes" if v else "❌ No"}).background_gradient(cmap='Greens', subset=['Confidence Score']).background_gradient(cmap='coolwarm', subset=['Price Change (2h) %'])
+            st.dataframe(styled_df, width='stretch',
+                         height=500, hide_index=True)
+        else:
+            st.warning("No pairs currently meet the selected filter criteria.")
+    else:
+        placeholder.warning("Could not retrieve market data.")
+except Exception as e:
+    placeholder.error("An error occurred during the scan.")
+    st.exception(e)
+
+# (The Trade Execution Planner section remains unchanged)
 st.write("---")
 st.header("Trade Execution Planner")
-if not df.empty and not df_to_display.empty and st.session_state.connected:
+if not df_to_display.empty and st.session_state.connected:
     candidate_symbols = df_to_display['Symbol'].tolist()
     selected_symbol = st.selectbox(
         "Select a Candidate to Plan a Trade:", candidate_symbols)
@@ -275,10 +298,12 @@ if not df.empty and not df_to_display.empty and st.session_state.connected:
                     "TP4 Price", f"${tp4_price:,.4f}", f"Close {partial_close_size:,.4f}")
                 st.success(
                     f"**💡 IMPORTANT RULE:** When the price hits **TP2 (${tp2_price:,.4f})**, immediately cancel your original Stop-Loss and place a new one at your entry price **(${entry_price:,.4f})**. This guarantees a risk-free trade.")
-elif not df.empty and not st.session_state.connected:
+elif not st.session_state.connected:
     st.warning("Please connect to your Binance account to generate a trade plan.")
 else:
     st.info("Waiting for scanner results to populate the planner.")
+
+# (The Historical Analysis section remains unchanged)
 st.write("---")
 st.header("📈 Historical Signal Analysis")
 historical_df = db.get_historical_signals()
