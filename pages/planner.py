@@ -2,19 +2,16 @@ import streamlit as st
 import ccxt
 import pandas as pd
 
-# --- Page 2: Trade Execution Planner ---
-
 st.set_page_config(page_title="Trade Planner", page_icon="📋", layout="wide")
 st.title("📋 Trade Execution Planner")
 st.caption(
-    "Plan your trade based on the latest scanner results from the main page.")
+    "Plan your trade based on the latest signals found by the automated worker.")
 
-# Check if scanner results exist in session state
-if 'scanner_results' not in st.session_state or st.session_state.scanner_results.empty:
-    st.warning("Please run a scan on the main 'app' page first.")
+if 'latest_signals' not in st.session_state or st.session_state.latest_signals.empty:
+    st.warning(
+        "No signals found in the latest scan. Please check back after the next automated run.")
     st.stop()
 
-# Load data from session state
 pump_candidates = st.session_state.get('pump_candidates', pd.DataFrame())
 dump_candidates = st.session_state.get('dump_candidates', pd.DataFrame())
 
@@ -23,11 +20,17 @@ filter_option = st.radio("Show Candidates For:",
 
 if filter_option == "Pumps":
     df_to_display = pump_candidates
+    if df_to_display.empty:
+        st.info("No Pump candidates found in the last scan.")
+        st.stop()
 else:
     df_to_display = dump_candidates
+    if df_to_display.empty:
+        st.info("No Dump candidates found in the last scan.")
+        st.stop()
 
 if not df_to_display.empty and st.session_state.get('connected', False):
-    candidate_symbols = df_to_display['Symbol'].tolist()
+    candidate_symbols = df_to_display['symbol'].tolist()
     selected_symbol = st.selectbox(
         "Select a Candidate to Plan a Trade:", candidate_symbols)
 
@@ -44,8 +47,8 @@ if not df_to_display.empty and st.session_state.get('connected', False):
                 signal_candle = ohlcv[0]
                 signal_price = signal_candle[4]
 
-                is_pump = df_to_display[df_to_display['Symbol'] ==
-                                        selected_symbol]['Dominant Pressure'].iloc[0] == '📈 Buyer'
+                is_pump = df_to_display[df_to_display['symbol'] ==
+                                        selected_symbol]['signal_type'].iloc[0] == 'Pump'
 
                 st.subheader(f"Price Analysis for {selected_symbol}")
                 price_col1, price_col2 = st.columns(2)
