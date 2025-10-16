@@ -21,7 +21,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install ccxt-pro pandas
+          pip install ccxt pandas
           pip install ccxt # Explicitly install ccxt base
 
       - name: Run scanner worker
