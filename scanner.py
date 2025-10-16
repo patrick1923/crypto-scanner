@@ -3,19 +3,145 @@ import pandas as pd
 import ccxt
 import ccxt.pro as ccxt_pro
 import asyncio
-from datetime import timezone
+from datetime import timezone, datetime
 import database as db
 
+
 db.create_table()
+st.set_page_config(page_title="Scanner", page_icon="⚡", layout="wide")
+st.title('⚡ High-Speed Market Scanner')
 
-st.set_page_config(
-    page_title="High-Speed Market Scanner & Trade Planner",
-    page_icon="⚡",
-    layout="wide",
-)
 
-st.title('⚡ High-Speed Market Scanner & Trade Planner')
-st.caption("Now with historical data logging and analysis.")
+@st.cache_data(ttl=3600)
+def get_daily_forecast():
+    """
+    Fetches daily data for BTC & ETH to determine the overall market trend
+    based on the 'Altseason Cheatsheet' logic.
+    """
+    try:
+        exchange = ccxt.binance({'options': {'defaultType': 'future'}})
+
+        # 1. Fetch Daily Data
+        # [day before, yesterday, today]
+        btc_ohlcv = exchange.fetch_ohlcv('BTC/USDT', '1d', limit=3)
+        eth_ohlcv = exchange.fetch_ohlcv('ETH/USDT', '1d', limit=3)
+
+        # Get 'yesterday's' candle (index -2)
+        btc_yesterday = btc_ohlcv[-2]
+        eth_yesterday = eth_ohlcv[-2]
+
+        # 2. Calculate Percent Change for Yesterday
+        btc_change = (
+            (btc_yesterday[4] - btc_yesterday[1]) / btc_yesterday[1]) * 100
+        eth_change = (
+            (eth_yesterday[4] - eth_yesterday[1]) / eth_yesterday[1]) * 100
+
+        # 3. Define BTC Trend
+        btc_trend = "STABLE"
+        if btc_change > 1.5:
+            btc_trend = "UP"
+        elif btc_change < -1.5:
+            btc_trend = "DOWN"
+
+        # 4. Define "BTC Dominance" Trend (ETH vs BTC Proxy)
+        btcd_trend = "STABLE"
+        if btc_change > (eth_change + 0.5):
+            btcd_trend = "UP"     # BTC significantly outperformed ETH
+        elif eth_change > (btc_change + 0.5):
+            btcd_trend = "DOWN"  # ETH significantly outperformed BTC
+
+        # 5. Apply Cheatsheet Logic
+        alt_trend = "STABLE"
+        if btcd_trend == "UP":
+            if btc_trend == "UP":
+                alt_trend = "ALTS DOWN 📉"
+            elif btc_trend == "DOWN":
+                alt_trend = "ALTS DUMP 🚨"
+            else:
+                alt_trend = "ALTS STABLE 😐"
+        elif btcd_trend == "STABLE":
+            if btc_trend == "UP":
+                alt_trend = "ALTS UP 📈"
+            elif btc_trend == "DOWN":
+                alt_trend = "ALTS DOWN 📉"
+            else:
+                alt_trend = "ALTS STABLE 😐"
+        elif btcd_trend == "DOWN":
+            if btc_trend == "UP":
+                alt_trend = "ALT SEASON 🚀"
+            elif btc_trend == "DOWN":
+                alt_trend = "ALTS STABLE 😐"
+            else:
+                alt_trend = "ALTS UP 📈"
+
+        return btc_trend, btcd_trend, alt_trend
+
+    except Exception as e:
+        print(f"Error in daily forecast: {e}")
+        return None, None, None
+
+
+@st.cache_data(ttl=3600)  # Cache for 1 hour
+def get_top_watchlist(df_all):
+    """Finds top 3 alts based on yesterday's relative volume."""
+    try:
+        exchange = ccxt.binance({'options': {'defaultType': 'future'}})
+        # Use the liquid pairs from our 24h volume check
+        liquid_symbols = df_all[df_all['High 24h Volume']
+                                == True]['Symbol'].tolist()
+
+        watchlist = []
+        for symbol in liquid_symbols:
+            if symbol in ['BTC/USDT', 'ETH/USDT']:
+                continue
+            # 20 for avg, 1 for yesterday
+            ohlcv = exchange.fetch_ohlcv(symbol, '1d', limit=21)
+            if len(ohlcv) < 21:
+                continue
+
+            df = pd.DataFrame(
+                ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            avg_vol = df.iloc[:-1]['volume'].mean()
+            yesterday_vol = df.iloc[-1]['volume']
+
+            rel_vol = yesterday_vol / avg_vol if avg_vol > 0 else 0
+            watchlist.append({'Symbol': symbol, 'Rel. Vol': rel_vol})
+
+        watchlist_df = pd.DataFrame(watchlist).sort_values(
+            by='Rel. Vol', ascending=False)
+        return watchlist_df.head(3)
+
+    except Exception as e:
+        print(f"Error creating watchlist: {e}")
+        return pd.DataFrame()
+
+
+# --- Display Daily Forecast ---
+st.header("Daily Market Forecast")
+btc_trend, btcd_trend, alt_trend = get_daily_forecast()
+
+if alt_trend:
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Bitcoin Trend (Yesterday)", btc_trend)
+    col2.metric("Money Flow (ETH vs. BTC)",
+                f"Alts {'📈' if btcd_trend == 'DOWN' else '📉' if btcd_trend == 'UP' else '😐'}")
+    col3.metric("Today's Altcoin Bias", alt_trend)
+
+    if alt_trend == "ALT SEASON 🚀":
+        st.success(
+            "BIAS: Strong bullish. Focus on **Pump Candidates**. Be aggressive with A+ setups.")
+    elif alt_trend in ["ALTS UP 📈"]:
+        st.info(
+            "BIAS: Mildly bullish. Focus on **Pump Candidates** but be more selective.")
+    elif alt_trend == "ALTS DUMP 🚨":
+        st.error(
+            "BIAS: Strong bearish. Focus only on **Dump Candidates**. Avoid longs.")
+    else:
+        st.warning(
+            "BIAS: Neutral / Choppy. Be highly selective. Wait for A+ signals only.")
+else:
+    st.error("Could not fetch daily market forecast.")
+
 
 if 'connected' not in st.session_state:
     st.session_state.connected = False
@@ -25,13 +151,19 @@ if 'api_key' not in st.session_state:
     st.session_state.api_key = ''
 if 'api_secret' not in st.session_state:
     st.session_state.api_secret = ''
-
+if 'scanner_results' not in st.session_state:
+    st.session_state.scanner_results = pd.DataFrame()
+if 'pump_candidates' not in st.session_state:
+    st.session_state.pump_candidates = pd.DataFrame()
+if 'dump_candidates' not in st.session_state:
+    st.session_state.dump_candidates = pd.DataFrame()
+if 'last_scan_time' not in st.session_state:
+    st.session_state.last_scan_time = None
 with st.expander("🔗 Connect to Your Binance Account"):
     api_key = st.text_input(
         "API Key", value=st.session_state.api_key, key="api_key_input")
     api_secret = st.text_input("API Secret", type="password",
                                value=st.session_state.api_secret, key="api_secret_input")
-
     if st.button("Connect & Check Balance"):
         if not api_key or not api_secret:
             st.warning("Please enter both API Key and API Secret.")
@@ -50,10 +182,8 @@ with st.expander("🔗 Connect to Your Binance Account"):
                         f"✅ Connection successful! Your total USDT balance is: **{usdt_balance:,.2f}**")
             except ccxt.AuthenticationError:
                 st.error("Authentication Error: Your API keys are incorrect.")
-                st.session_state.connected = False
             except Exception as e:
                 st.error(f"An error occurred: {e}")
-                st.session_state.connected = False
 
 
 def fetch_account_data():
@@ -73,27 +203,13 @@ def fetch_account_data():
         positions_data = [{'Symbol': p['symbol'], 'Side': p['side'].capitalize(), 'Size': p['contracts'], 'Entry Price': p['entryPrice'],
                            'Mark Price': p['markPrice'], 'Unrealized PnL': p['unrealizedPnl']} for p in open_positions]
         return pd.DataFrame(positions_data), account_health
-    except Exception as e:
-        st.sidebar.error(f"Failed to fetch account data.")
+    except Exception:
         return None, None
 
 
 positions_df, health_data = None, None
 if st.session_state.connected:
     positions_df, health_data = fetch_account_data()
-    with st.sidebar:
-        st.success(
-            f"Connected ✅\n\nBalance: {st.session_state.usdt_balance:,.2f} USDT")
-        if health_data:
-            st.metric("Maintenance Margin",
-                      f"${health_data['maint_margin']:,.2f}")
-            st.metric("Margin Ratio", f"{health_data['margin_ratio']:.2f}%")
-            if health_data['margin_ratio'] > 80:
-                st.warning("⚠️ Margin Ratio is high! Risk of liquidation.")
-            else:
-                st.info("Margin Ratio is safe.")
-else:
-    st.sidebar.warning("Not Connected 🔴")
 
 
 async def analyze_symbol_2h(exchange, symbol):
@@ -160,33 +276,6 @@ async def scan_all_markets():
         return df
     finally:
         await exchange.close()
-
-placeholder = st.empty()
-with placeholder.container():
-    st.info("🚀 Starting the high-speed scan... This will take a few seconds.")
-df = run_scanner()
-
-num_pumps, num_dumps = 0, 0
-if not df.empty:
-    pump_candidates = df[(df['Price Change (2h) %'] > 2) & (df['Volume Ratio (2h)'] > 2.0) & (
-        df['Dominant Pressure'] == '📈 Buyer') & (df['High 24h Volume'] == True)]
-    dump_candidates = df[(df['Price Change (2h) %'] < -2) & (df['Volume Ratio (2h)'] > 2.0)
-                         & (df['Dominant Pressure'] == '📉 Seller') & (df['High 24h Volume'] == True)]
-    num_pumps = len(
-        pump_candidates[pump_candidates['Volatility Contraction'] == True])
-    num_dumps = len(
-        dump_candidates[dump_candidates['Volatility Contraction'] == True])
-    if not pump_candidates.empty:
-        db.log_signals(pump_candidates, 'Pump')
-    if not dump_candidates.empty:
-        db.log_signals(dump_candidates, 'Dump')
-
-with st.sidebar:
-    st.write("---")
-    st.subheader("🌡️ Market Pulse (A+ Setups)")
-    st.metric("Pump Signals Found", f"{num_pumps} 🟢")
-    st.metric("Dump Signals Found", f"{num_dumps} 🔴")
-
 st.write("---")
 if st.session_state.connected:
     st.header("📊 Live Positions Dashboard")
@@ -197,17 +286,54 @@ if st.session_state.connected:
     elif positions_df is not None:
         st.info("You have no open positions.")
     st.write("---")
+st.header("⚡ 2-Hour Breakout Scanner")
+if st.button("🔄 Refresh Scan Data (This may take ~10 seconds)"):
+    with st.spinner("🚀 Starting the high-speed scan..."):
+        df = run_scanner()
+        if not df.empty:
+            st.session_state.scanner_results = df
+            st.session_state.last_scan_time = datetime.now()
+            pump_candidates = df[(df['Price Change (2h) %'] > 2) & (df['Volume Ratio (2h)'] > 2.0) & (
+                df['Dominant Pressure'] == '📈 Buyer') & (df['High 24h Volume'] == True)]
+            dump_candidates = df[(df['Price Change (2h) %'] < -2) & (df['Volume Ratio (2h)'] > 2.0) & (
+                df['Dominant Pressure'] == '📉 Seller') & (df['High 24h Volume'] == True)]
+            st.session_state.pump_candidates = pump_candidates
+            st.session_state.dump_candidates = dump_candidates
+            if not pump_candidates.empty:
+                db.log_signals(pump_candidates, 'Pump')
+            if not dump_candidates.empty:
+                db.log_signals(dump_candidates, 'Dump')
+            st.success("✅ Scan complete!")
+        else:
+            st.error("An error occurred during the scan.")
 
-if not df.empty:
-    placeholder.success(f"✅ Scan complete! Analyzed {len(df)} pairs.")
+if st.session_state.last_scan_time:
+    st.caption(
+        f"Data last refreshed: {st.session_state.last_scan_time.strftime('%Y-%m-%d %H:%M:%S')}")
+else:
+    st.info("Click the 'Refresh Scan Data' button to start the first scan.")
+    st.stop()
+
+if not st.session_state.scanner_results.empty:
+    df_to_display = st.session_state.scanner_results
+    pump_candidates = st.session_state.pump_candidates
+    dump_candidates = st.session_state.dump_candidates
+
+    # --- NEW: Display Top 3 Watchlist ---
+    st.subheader("Top 3 to Watch Today (Based on Yesterday's Volume)")
+    watchlist_df = get_top_watchlist(st.session_state.scanner_results)
+    if not watchlist_df.empty:
+        st.dataframe(watchlist_df, width='stretch', hide_index=True)
+    else:
+        st.info("Analyzing yesterday's volume... run scan again if empty.")
+
     filter_option = st.radio("Filter Results:", ("Show All",
                              "Show Pump Candidates", "Show Dump Candidates"), horizontal=True)
     if filter_option == "Show Pump Candidates":
         df_to_display = pump_candidates
     elif filter_option == "Show Dump Candidates":
         df_to_display = dump_candidates
-    else:
-        df_to_display = df
+
     if not df_to_display.empty:
         display_columns = ['Symbol', 'Price', 'Signal Time', 'Confidence Score',
                            'Price Change (2h) %', 'Volume Ratio (2h)', '24h Volume', 'Volatility Contraction', 'Dominant Pressure']
@@ -218,124 +344,31 @@ if not df.empty:
         st.dataframe(styled_df, width='stretch', height=500, hide_index=True)
     else:
         st.warning("No pairs currently meet the selected filter criteria.")
-else:
-    placeholder.error("An error occurred during the scan.")
 
-st.write("---")
-st.header("Trade Execution Planner")
-if not df.empty and not df_to_display.empty and st.session_state.connected:
-    candidate_symbols = df_to_display['Symbol'].tolist()
-    selected_symbol = st.selectbox(
-        "Select a Candidate to Plan a Trade:", candidate_symbols)
-    if selected_symbol:
-        risk_percent = st.slider(
-            "Risk per Trade (% of Account)", min_value=0.5, max_value=5.0, value=1.0, step=0.1)
-        if st.button("Generate Execution Plan"):
-            with st.spinner("Fetching latest data for plan..."):
-                exchange = ccxt.binance()
-                ticker = exchange.fetch_ticker(selected_symbol)
-                current_live_price = ticker['last']
-                ohlcv = exchange.fetch_ohlcv(selected_symbol, '2h', limit=2)
-                signal_candle = ohlcv[0]
-                signal_price = signal_candle[4]
-                is_pump = df_to_display[df_to_display['Symbol'] ==
-                                        selected_symbol]['Dominant Pressure'].iloc[0] == '📈 Buyer'
-                st.subheader(f"Price Analysis for {selected_symbol}")
-                price_col1, price_col2 = st.columns(2)
-                price_col1.metric(
-                    "Signal Price", f"${signal_price:,.4f}", help="Price at the close of the 2-hour signal candle.")
-                price_col2.metric("Current Live Price", f"${current_live_price:,.4f}",
-                                  delta=f"{((current_live_price-signal_price)/signal_price)*100:.2f}% since signal", delta_color="normal")
-                if is_pump:
-                    entry_price = signal_candle[2] * 1.001
-                    stop_loss_price = signal_candle[3] * 0.999
-                    risk_distance = entry_price - stop_loss_price
-                    tp1_price = entry_price + (risk_distance * 1.5)
-                    tp2_price = entry_price + (risk_distance * 2.5)
-                    tp3_price = entry_price + (risk_distance * 3.5)
-                    tp4_price = entry_price + (risk_distance * 4.5)
-                else:
-                    entry_price = signal_candle[3] * 0.999
-                    stop_loss_price = signal_candle[2] * 1.001
-                    risk_distance = stop_loss_price - entry_price
-                    tp1_price = max(0, entry_price - (risk_distance * 1.5))
-                    tp2_price = max(0, entry_price - (risk_distance * 2.5))
-                    tp3_price = max(0, entry_price - (risk_distance * 3.5))
-                    tp4_price = max(0, entry_price - (risk_distance * 4.5))
-                risk_amount_usd = st.session_state.usdt_balance * \
-                    (risk_percent / 100)
-                total_position_size = risk_amount_usd / \
-                    risk_distance if risk_distance > 0 else 0
-                partial_close_size = total_position_size * 0.25
-                st.subheader(f"📋 Full Execution Plan for {selected_symbol}")
-                st.info(
-                    f"**Action:** Place the following orders immediately on Binance.")
-                st.markdown("#### Step 1: Initial Entry & Protection")
-                c1, c2 = st.columns(2)
-                c1.metric(f"**{'🟢 BUY STOP' if is_pump else '🔴 SELL STOP'} Order**", f"${entry_price:,.4f}",
-                          delta=f"Size: {total_position_size:,.4f} {selected_symbol.split('/')[0]}")
-                c2.metric(f"**STOP-LOSS ({'SELL' if is_pump else 'BUY'})**",
-                          f"${stop_loss_price:,.4f}", delta=f"Risk: ${risk_amount_usd:,.2f}")
-                st.markdown(
-                    "#### Step 2: Set 4 Partial Take-Profit Orders (Limit)")
-                tp_c1, tp_c2, tp_c3, tp_c4 = st.columns(4)
-                tp_c1.metric(
-                    "TP1 Price", f"${tp1_price:,.4f}", f"Close {partial_close_size:,.4f}")
-                tp_c2.metric(
-                    "TP2 Price", f"${tp2_price:,.4f}", f"Close {partial_close_size:,.4f}")
-                tp_c3.metric(
-                    "TP3 Price", f"${tp3_price:,.4f}", f"Close {partial_close_size:,.4f}")
-                tp_c4.metric(
-                    "TP4 Price", f"${tp4_price:,.4f}", f"Close {partial_close_size:,.4f}")
-                st.success(
-                    f"**💡 IMPORTANT RULE:** When the price hits **TP2 (${tp2_price:,.4f})**, immediately cancel your original Stop-Loss and place a new one at your entry price **(${entry_price:,.4f})**. This guarantees a risk-free trade.")
-elif not df.empty and not st.session_state.connected:
-    st.warning("Please connect to your Binance account to generate a trade plan.")
-else:
-    st.info("Waiting for scanner results to populate the planner.")
+num_pumps, num_dumps = 0, 0
+if not st.session_state.pump_candidates.empty:
+    num_pumps = len(
+        st.session_state.pump_candidates[st.session_state.pump_candidates['Volatility Contraction'] == True])
+if not st.session_state.dump_candidates.empty:
+    num_dumps = len(
+        st.session_state.dump_candidates[st.session_state.dump_candidates['Volatility Contraction'] == True])
 
-st.write("---")
-st.header("📈 Historical Signal Analysis")
-historical_df = db.get_historical_signals()
-if not historical_df.empty:
-    with st.form(key='outcome_form'):
-        st.subheader("📝 Log Trade Outcome")
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            signal_id_to_update = st.selectbox(
-                "Select Signal ID", historical_df['id'].tolist())
-        with col2:
-            trade_outcome = st.selectbox(
-                "Outcome", ["", "Win", "Loss", "Breakeven"])
-        with col3:
-            trade_notes = st.text_input("Notes (e.g., Hit TP2, Moved to BE)")
-        submitted = st.form_submit_button("Save Outcome")
-        if submitted:
-            if signal_id_to_update and trade_outcome:
-                db.update_signal_outcome(
-                    signal_id_to_update, trade_outcome, trade_notes)
-                st.toast(f"Outcome for signal ID {signal_id_to_update} saved!")
-                st.rerun()
+with st.sidebar:
+    if st.session_state.connected:
+        st.success(
+            f"Connected ✅\n\nBalance: {st.session_state.usdt_balance:,.2f} USDT")
+        if health_data:
+            st.metric("Maintenance Margin",
+                      f"${health_data['maint_margin']:,.2f}")
+            st.metric("Margin Ratio", f"{health_data['margin_ratio']:.2f}%")
+            if health_data['margin_ratio'] > 80:
+                st.warning("⚠️ Margin Ratio is high!")
             else:
-                st.warning("Please select a Signal ID and an Outcome.")
-    st.subheader("Full Signal History")
-    st.dataframe(historical_df, width='stretch')
-    st.subheader("Summary Charts")
-    chart_col1, chart_col2 = st.columns(2)
-    with chart_col1:
-        st.write("Signals by Time of Day (KSA)")
-        historical_df['scan_time'] = pd.to_datetime(historical_df['scan_time'])
-        historical_df['hour'] = historical_df['scan_time'].dt.hour
-        signal_counts_by_hour = historical_df['hour'].value_counts(
-        ).sort_index()
-        st.bar_chart(signal_counts_by_hour)
-    with chart_col2:
-        st.write("Top 10 Most Frequent Pairs")
-        signal_counts_by_pair = historical_df['symbol'].value_counts().head(10)
-        st.bar_chart(signal_counts_by_pair)
-    if st.button("Clear Signal History"):
-        db.clear_database()
-        st.toast("Historical data has been cleared.")
-        st.rerun()
-else:
-    st.info("No historical data yet. Run a few scans to start collecting data.")
+                st.info("Margin Ratio is safe.")
+    else:
+        st.sidebar.warning("Not Connected 🔴")
+
+    st.write("---")
+    st.subheader("🌡️ Market Pulse (A+ Setups)")
+    st.metric("Pump Signals Found", f"{num_pumps} 🟢")
+    st.metric("Dump Signals Found", f"{num_dumps} 🔴")
