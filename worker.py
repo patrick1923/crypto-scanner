@@ -1,7 +1,7 @@
 import pandas as pd
 import ccxt.pro as ccxt_pro
 import asyncio
-from datetime import timezone
+from datetime import timezone, datetime
 import database as db
 
 
@@ -42,11 +42,13 @@ async def analyze_symbol_2h(exchange, symbol):
         signal_timestamp = pd.to_datetime(
             signal_candle['timestamp'], unit='ms').tz_localize(timezone.utc)
         return {'Symbol': symbol, 'Price': signal_candle['close'], 'Signal Time': signal_timestamp, 'Confidence Score': confidence_score, 'Price Change (2h) %': price_change, 'Volume Ratio (2h)': volume_ratio, 'Dominant Pressure': pressure, 'Volatility Contraction': is_contraction}
-    except Exception:
+    except Exception as e:
+        print(f"Error analyzing {symbol}: {e}")
         return None
 
 
 async def scan_all_markets():
+    """This function is now wrapped in a try/finally to guarantee closure."""
     exchange = ccxt_pro.binance({'options': {'defaultType': 'future'}})
     try:
         await exchange.load_markets()
@@ -54,25 +56,18 @@ async def scan_all_markets():
         tasks = [analyze_symbol_2h(exchange, symbol) for symbol in symbols]
         results = await asyncio.gather(*tasks)
         df = pd.DataFrame([res for res in results if res is not None])
+
         if df.empty:
-            return df
+            print("No analysis data retrieved.")
+            return
+
         all_tickers = await exchange.fetch_tickers(df['Symbol'].tolist())
         volumes_24h = {symbol: ticker['quoteVolume']
                        for symbol, ticker in all_tickers.items()}
         df['24h Volume'] = df['Symbol'].map(volumes_24h).fillna(0)
         volume_threshold = df['24h Volume'].quantile(0.75)
         df['High 24h Volume'] = df['24h Volume'] > volume_threshold
-        return df
-    finally:
-        await exchange.close()
 
-
-def run_worker():
-    print("Worker starting scan...")
-    db.create_table()
-    df = asyncio.run(scan_all_markets())
-
-    if not df.empty:
         pump_candidates = df[(df['Price Change (2h) %'] > 2) & (df['Volume Ratio (2h)'] > 2.0) & (
             df['Dominant Pressure'] == '📈 Buyer') & (df['High 24h Volume'] == True)]
         dump_candidates = df[(df['Price Change (2h) %'] < -2) & (df['Volume Ratio (2h)'] > 2.0) & (
@@ -84,8 +79,16 @@ def run_worker():
         if not dump_candidates.empty:
             db.log_signals(dump_candidates, 'Dump')
             print(f"Logged {len(dump_candidates)} new dump signals.")
-    print("Worker scan complete.")
 
+    except Exception as e:
+        print(f"An error occurred during the scan: {e}")
+
+    finally:
+        print("Scan complete. Closing exchange connection...")
+        await exchange.close()
+        print("Connection closed.")
 
 if __name__ == "__main__":
-    run_worker()
+    db.create_table()
+    print(f"Worker starting scan at {datetime.now()}...")
+    asyncio.run(scan_all_markets())
