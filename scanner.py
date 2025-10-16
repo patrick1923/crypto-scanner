@@ -11,6 +11,7 @@ st.set_page_config(page_title="Scanner", page_icon="⚡", layout="wide")
 st.title('⚡ High-Speed Market Scanner')
 st.caption("Now with advanced A-F Signal Grading.")
 
+# --- Initialize Session State ---
 if 'connected' not in st.session_state:
     st.session_state.connected = False
 if 'usdt_balance' not in st.session_state:
@@ -28,33 +29,29 @@ if 'dump_candidates' not in st.session_state:
 if 'last_scan_time' not in st.session_state:
     st.session_state.last_scan_time = None
 
-try:
-    API_KEY = st.secrets["API_KEY"]
-    API_SECRET = st.secrets["API_SECRET"]
-    st.session_state.api_key = API_KEY
-    st.session_state.api_secret = API_SECRET
-except:
-    API_KEY = ''
-    API_SECRET = ''
-
+# --- Corrected Auto-Connection Logic ---
 if not st.session_state.connected:
-    if API_KEY and API_SECRET:
-        try:
-            exchange = ccxt.binance({
-                'apiKey': API_KEY,
-                'secret': API_SECRET,
-                'options': {'defaultType': 'future'}
-            })
-            with st.spinner("Auto-connecting..."):
-                balance = exchange.fetch_balance()
-                usdt_balance = balance['USDT']['total']
-                st.session_state.usdt_balance = usdt_balance
-                st.session_state.connected = True
-        except Exception as e:
-            st.session_state.connected = False
-            if 'API_KEY' in st.secrets:
-                st.error(f"Failed to auto-connect using Secrets: {e}")
-            pass
+    try:
+        API_KEY = st.secrets["API_KEY"]
+        API_SECRET = st.secrets["API_SECRET"]
+        st.session_state.api_key = API_KEY
+        st.session_state.api_secret = API_SECRET
+
+        exchange = ccxt.binance({
+            'apiKey': API_KEY,
+            'secret': API_SECRET,
+            'options': {'defaultType': 'future'}
+        })
+        with st.spinner("Auto-connecting..."):
+            balance = exchange.fetch_balance()
+            usdt_balance = balance['USDT']['total']
+            st.session_state.usdt_balance = usdt_balance
+            st.session_state.connected = True
+    except Exception as e:
+        st.session_state.connected = False
+        if 'API_KEY' in st.secrets:
+            st.error(f"Failed to auto-connect using Secrets: {e}")
+        pass
 
 
 def fetch_account_data():
@@ -105,12 +102,10 @@ async def analyze_symbol_2h(exchange, symbol):
         pressure = "📈 Buyer" if signal_candle['close'] > signal_candle['open'] else "📉 Seller"
         signal_timestamp = pd.to_datetime(
             signal_candle['timestamp'], unit='ms').tz_localize(timezone.utc)
-
         grade = "N/A"
         analysis = "No significant price move. (Fails < 2% check)"
         is_pump_signal = price_change > 2 and pressure == "📈 Buyer"
         is_dump_signal = price_change < -2 and pressure == "📉 Seller"
-
         if is_pump_signal or is_dump_signal:
             if volume_ratio < 1.5:
                 grade = "F (Trap)"
@@ -136,11 +131,7 @@ async def analyze_symbol_2h(exchange, symbol):
                 else:
                     grade = "A (High Volume)"
                     analysis = "A-Grade setup. Explosive volume from a noisy state."
-
-        return {'Symbol': symbol, 'Price': signal_candle['close'], 'Signal Time': signal_timestamp,
-                'Grade': grade, 'Analysis': analysis,
-                'Price Change (2h) %': price_change, 'Volume Ratio (2h)': volume_ratio,
-                'Dominant Pressure': pressure, 'Volatility Contraction': is_contraction}
+        return {'Symbol': symbol, 'Price': signal_candle['close'], 'Signal Time': signal_timestamp, 'Grade': grade, 'Analysis': analysis, 'Price Change (2h) %': price_change, 'Volume Ratio (2h)': volume_ratio, 'Dominant Pressure': pressure, 'Volatility Contraction': is_contraction}
     except Exception:
         return None
 
@@ -317,7 +308,7 @@ if not st.session_state.scanner_results.empty:
             'Price': '{:,.4f}', 'Signal Time': lambda t: t.strftime('%Y-%m-%d %H:%M'),
             'Price Change (2h) %': '{:.2f}%', 'Volume Ratio (2h)': '{:.2f}x',
             'Volatility Contraction': lambda v: "✅ Yes" if v else "❌ No"
-        }).map(grade_color, subset=['Grade'])  # --- THIS IS THE FIX ---
+        }).map(grade_color, subset=['Grade'])
 
         st.dataframe(styled_df, width='stretch', height=500, hide_index=True)
     else:

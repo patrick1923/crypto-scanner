@@ -2,19 +2,15 @@ import streamlit as st
 import ccxt
 import pandas as pd
 
-# --- Page 2: Trade Execution Planner ---
-
 st.set_page_config(page_title="Trade Planner", page_icon="📋", layout="wide")
 st.title("📋 Trade Execution Planner")
 st.caption(
     "Plan your trade based on the latest scanner results from the main page.")
 
-# Check if scanner results exist in session state
 if 'scanner_results' not in st.session_state or st.session_state.scanner_results.empty:
     st.warning("Please run a scan on the main 'app' page first.")
     st.stop()
 
-# Load data from session state
 pump_candidates = st.session_state.get('pump_candidates', pd.DataFrame())
 dump_candidates = st.session_state.get('dump_candidates', pd.DataFrame())
 
@@ -49,7 +45,6 @@ if not df_to_display.empty and st.session_state.get('connected', False):
 
                 st.subheader(f"Price Analysis for {selected_symbol}")
                 price_col1, price_col2 = st.columns(2)
-                # --- MODIFIED: Changed .4f to .8f ---
                 price_col1.metric(
                     "Signal Price", f"${signal_price:,.8f}", help="Price at the close of the 2-hour signal candle.")
                 price_col2.metric("Current Live Price", f"${current_live_price:,.8f}",
@@ -83,16 +78,13 @@ if not df_to_display.empty and st.session_state.get('connected', False):
                     f"**Action:** Place the following orders immediately on Binance.")
                 st.markdown("#### Step 1: Initial Entry & Protection")
                 c1, c2 = st.columns(2)
-                # --- MODIFIED: Changed .4f to .8f ---
                 c1.metric(f"**{'🟢 BUY STOP' if is_pump else '🔴 SELL STOP'} Order**", f"${entry_price:,.8f}",
                           delta=f"Size: {total_position_size:,.4f} {selected_symbol.split('/')[0]}")
                 c2.metric(f"**STOP-LOSS ({'SELL' if is_pump else 'BUY'})**",
                           f"${stop_loss_price:,.8f}", delta=f"Risk: ${risk_amount_usd:,.2f}")
-
                 st.markdown(
                     "#### Step 2: Set 4 Partial Take-Profit Orders (Limit)")
                 tp_c1, tp_c2, tp_c3, tp_c4 = st.columns(4)
-                # --- MODIFIED: Changed .4f to .8f ---
                 tp_c1.metric(
                     "TP1 Price", f"${tp1_price:,.8f}", f"Close {partial_close_size:,.4f}")
                 tp_c2.metric(
@@ -101,8 +93,6 @@ if not df_to_display.empty and st.session_state.get('connected', False):
                     "TP3 Price", f"${tp3_price:,.8f}", f"Close {partial_close_size:,.4f}")
                 tp_c4.metric(
                     "TP4 Price", f"${tp4_price:,.8f}", f"Close {partial_close_size:,.4f}")
-
-                # --- MODIFIED: Changed .4f to .8f ---
                 st.success(
                     f"**💡 IMPORTANT RULE:** When the price hits **TP2 (${tp2_price:,.8f})**, immediately cancel your original Stop-Loss and place a new one at your entry price **(${entry_price:,.8f})**. This guarantees a risk-free trade.")
 elif not st.session_state.get('connected', False):
