@@ -3,17 +3,20 @@ import pandas as pd
 import ccxt
 import ccxt.pro as ccxt_pro
 import asyncio
-from datetime import timezone, datetime
+from datetime import timezone, datetime, timedelta
 import database as db
 
-db.create_table()
+# --- Ensure DB Tables Exist ---
+db.create_tables()  # Use the plural function now
+
 st.set_page_config(page_title="Scanner", page_icon="⚡", layout="wide")
 st.title('⚡ High-Speed Market Scanner')
-st.caption("Now with advanced A-F Signal Grading.")
+st.caption("Now with advanced A-F Signal Grading and Position Logging.")
 
-# --- Initialize Session State ---
+# (Initialize Session State - Unchanged)
 if 'connected' not in st.session_state:
     st.session_state.connected = False
+# ... (rest of session state init) ...
 if 'usdt_balance' not in st.session_state:
     st.session_state.usdt_balance = 0
 if 'api_key' not in st.session_state:
@@ -29,19 +32,16 @@ if 'dump_candidates' not in st.session_state:
 if 'last_scan_time' not in st.session_state:
     st.session_state.last_scan_time = None
 
-# --- Corrected Auto-Connection Logic ---
+
+# (Auto-Connection Logic - Unchanged)
 if not st.session_state.connected:
     try:
         API_KEY = st.secrets["API_KEY"]
         API_SECRET = st.secrets["API_SECRET"]
         st.session_state.api_key = API_KEY
         st.session_state.api_secret = API_SECRET
-
-        exchange = ccxt.binance({
-            'apiKey': API_KEY,
-            'secret': API_SECRET,
-            'options': {'defaultType': 'future'}
-        })
+        exchange = ccxt.binance(
+            {'apiKey': API_KEY, 'secret': API_SECRET, 'options': {'defaultType': 'future'}})
         with st.spinner("Auto-connecting..."):
             balance = exchange.fetch_balance()
             usdt_balance = balance['USDT']['total']
@@ -50,8 +50,9 @@ if not st.session_state.connected:
     except Exception as e:
         st.session_state.connected = False
         if 'API_KEY' in st.secrets:
-            st.error(f"Failed to auto-connect using Secrets: {e}")
-        pass
+            pass  # Fail silently if keys exist but fail
+
+# --- Live Account Data Fetching (Now includes logging) ---
 
 
 def fetch_account_data():
@@ -66,18 +67,41 @@ def fetch_account_data():
         account_health = {'margin_ratio': float(
             margin_ratio) * 100, 'maint_margin': float(maint_margin)}
         positions_raw = exchange.fetch_positions()
-        open_positions = [
-            p for p in positions_raw if float(p['contracts']) > 0]
-        positions_data = [{'Symbol': p['symbol'], 'Side': p['side'].capitalize(), 'Size': p['contracts'], 'Entry Price': p['entryPrice'],
-                           'Mark Price': p['markPrice'], 'Unrealized PnL': p['unrealizedPnl']} for p in open_positions]
-        return pd.DataFrame(positions_data), account_health
-    except Exception:
+        open_positions = [p for p in positions_raw if float(
+            p.get('contracts', 0)) > 0]
+        positions_data = []
+        for p in open_positions:
+            timestamp_ms = p.get('timestamp')
+            entry_time_ksa = "N/A"
+            if timestamp_ms:
+                dt_utc = datetime.fromtimestamp(
+                    timestamp_ms / 1000, tz=timezone.utc)
+                dt_ksa = dt_utc + timedelta(hours=3)
+                entry_time_ksa = dt_ksa.strftime('%Y-%m-%d %H:%M:%S')
+            positions_data.append({
+                'Symbol': p.get('symbol', 'N/A'), 'Side': p.get('side', 'N/A').capitalize(),
+                'Size': p.get('contracts', 0), 'Entry Price': p.get('entryPrice', 0),
+                'Mark Price': p.get('markPrice', 0), 'Unrealized PnL': p.get('unrealizedPnl', 0),
+                'Entry Time (KSA)': entry_time_ksa
+            })
+        positions_df = pd.DataFrame(positions_data)
+
+        # --- NEW: Log the fetched positions ---
+        db.log_position_snapshot(positions_df)
+
+        return positions_df, account_health
+    except Exception as e:
+        st.sidebar.error(f"Failed to fetch/log account data.")
+        print(f"Error fetching/logging account data: {e}")
         return None, None
 
 
 positions_df, health_data = None, None
 if st.session_state.connected:
     positions_df, health_data = fetch_account_data()
+
+# (Scanner Data Fetching - Unchanged)
+# ... (Same as before)
 
 
 async def analyze_symbol_2h(exchange, symbol):
@@ -91,7 +115,8 @@ async def analyze_symbol_2h(exchange, symbol):
         pre_signal_candle = df.iloc[-2]
         pre_signal_range = pre_signal_candle['range']
         avg_range_10 = df['range'].iloc[-12:-2].mean()
-        is_contraction = pre_signal_range < (avg_range_10 * 0.5)
+        is_contraction = pre_signal_range < (
+            avg_range_10 * 0.5) if avg_range_10 > 0 else False
         signal_candle = df.iloc[-1]
         previous_candle = df.iloc[-2]
         price_change = (
@@ -160,9 +185,12 @@ async def scan_all_markets():
     finally:
         await exchange.close()
 
+# (Daily Forecast - Unchanged)
+
 
 @st.cache_data(ttl=3600)
 def get_daily_forecast():
+    # ... (Same logic as before) ...
     try:
         exchange = ccxt.binance({'options': {'defaultType': 'future'}})
         btc_ohlcv = exchange.fetch_ohlcv('BTC/USDT', '1d', limit=3)
@@ -221,17 +249,21 @@ if alt_trend:
 else:
     st.error("Could not fetch daily market forecast.")
 
+
+# (Main UI Display - Unchanged)
+# ... (Same as before) ...
 st.write("---")
 if st.session_state.connected:
     st.header("📊 Live Positions Dashboard")
     if positions_df is not None and not positions_df.empty:
-        styled_positions = positions_df.style.format({'Entry Price': '{:,.4f}', 'Mark Price': '{:,.4f}',
-                                                     'Unrealized PnL': '{:,.2f} USDT'}).background_gradient(cmap='RdYlGn', subset=['Unrealized PnL'])
+        pos_display_columns = ['Symbol', 'Side', 'Size', 'Entry Price',
+                               'Mark Price', 'Unrealized PnL', 'Entry Time (KSA)']
+        styled_positions = positions_df[pos_display_columns].style.format({'Entry Price': '{:,.4f}', 'Mark Price': '{:,.4f}', 'Unrealized PnL': '{:,.2f} USDT', 'Size': '{:,.4f}'}).apply(
+            lambda x: ['background-color: #FF4B4B' if x['Unrealized PnL'] < 0 else 'background-color: #2E8B57' for i in x], axis=1, subset=['Unrealized PnL'])
         st.dataframe(styled_positions, width='stretch', hide_index=True)
     elif positions_df is not None:
         st.info("You have no open positions.")
     st.write("---")
-
 st.header("⚡ 2-Hour Breakout Scanner")
 if st.button("🔄 Refresh Scan Data (This may take ~10 seconds)"):
     with st.spinner("🚀 Starting the high-speed scan..."):
@@ -239,21 +271,17 @@ if st.button("🔄 Refresh Scan Data (This may take ~10 seconds)"):
         if not df.empty:
             st.session_state.scanner_results = df
             st.session_state.last_scan_time = datetime.now()
-
             tradable_grades = [
                 'A+ (Explosive)', 'A (Prime)', 'A (High Volume)', 'B+ (Noisy)', 'B (Weak)']
             tradable_pumps = df[(df['Grade'].isin(tradable_grades)) & (
                 df['Dominant Pressure'] == '📈 Buyer') & (df['High 24h Volume'] == True)]
             tradable_dumps = df[(df['Grade'].isin(tradable_grades)) & (
                 df['Dominant Pressure'] == '📉 Seller') & (df['High 24h Volume'] == True)]
-
             st.session_state.pump_candidates = tradable_pumps
             st.session_state.dump_candidates = tradable_dumps
-
             all_signals_to_log = df[df['Grade'] != 'N/A']
             pumps_to_log = all_signals_to_log[all_signals_to_log['Dominant Pressure'] == '📈 Buyer']
             dumps_to_log = all_signals_to_log[all_signals_to_log['Dominant Pressure'] == '📉 Seller']
-
             if not pumps_to_log.empty:
                 db.log_signals(pumps_to_log, 'Pump')
             if not dumps_to_log.empty:
@@ -261,29 +289,24 @@ if st.button("🔄 Refresh Scan Data (This may take ~10 seconds)"):
             st.success("✅ Scan complete!")
         else:
             st.error("An error occurred during the scan.")
-
 if st.session_state.last_scan_time:
     st.caption(
         f"Data last refreshed: {st.session_state.last_scan_time.strftime('%Y-%m-%d %H:%M:%S')}")
 else:
     st.info("Click the 'Refresh Scan Data' button to start the first scan.")
-
 if not st.session_state.scanner_results.empty:
     df_to_display = st.session_state.scanner_results
     pump_candidates = st.session_state.pump_candidates
     dump_candidates = st.session_state.dump_candidates
-
     filter_option = st.radio("Filter Results:", ("Show All",
                              "Show Tradable Pumps", "Show Tradable Dumps"), horizontal=True)
     if filter_option == "Show Tradable Pumps":
         df_to_display = pump_candidates
     elif filter_option == "Show Tradable Dumps":
         df_to_display = dump_candidates
-
     if not df_to_display.empty:
         display_columns = ['Symbol', 'Price', 'Signal Time', 'Grade', 'Analysis',
                            'Price Change (2h) %', 'Volume Ratio (2h)', 'Volatility Contraction', 'Dominant Pressure']
-
         grade_map = {'A+ (Explosive)': 0, 'A (Prime)': 1, 'A (High Volume)': 2,
                      'B+ (Noisy)': 3, 'B (Weak)': 4, 'C (Weak/Noisy)': 5, 'F (Trap)': 6, 'N/A': 7}
         df_to_display['Grade_Sort'] = df_to_display['Grade'].map(grade_map)
@@ -303,17 +326,13 @@ if not st.session_state.scanner_results.empty:
             if 'F (' in grade:
                 return 'background-color: #9B2C2C'
             return ''
-
-        styled_df = df_sorted[display_columns].style.format({
-            'Price': '{:,.4f}', 'Signal Time': lambda t: t.strftime('%Y-%m-%d %H:%M'),
-            'Price Change (2h) %': '{:.2f}%', 'Volume Ratio (2h)': '{:.2f}x',
-            'Volatility Contraction': lambda v: "✅ Yes" if v else "❌ No"
-        }).map(grade_color, subset=['Grade'])
-
+        styled_df = df_sorted[display_columns].style.format({'Price': '{:,.4f}', 'Signal Time': lambda t: (t + timedelta(hours=3)).strftime(
+            '%Y-%m-%d %H:%M KSA'), 'Price Change (2h) %': '{:.2f}%', 'Volume Ratio (2h)': '{:.2f}x', 'Volatility Contraction': lambda v: "✅ Yes" if v else "❌ No"}).map(grade_color, subset=['Grade'])
         st.dataframe(styled_df, width='stretch', height=500, hide_index=True)
     else:
         st.warning("No pairs currently meet the selected filter criteria.")
 
+# (Sidebar Market Pulse - Unchanged)
 num_pumps, num_dumps = 0, 0
 if not st.session_state.pump_candidates.empty:
     num_pumps = len(
@@ -321,7 +340,6 @@ if not st.session_state.pump_candidates.empty:
 if not st.session_state.dump_candidates.empty:
     num_dumps = len(
         st.session_state.dump_candidates[st.session_state.dump_candidates['Grade'] == 'A+ (Explosive)'])
-
 with st.sidebar:
     if st.session_state.connected:
         st.success(
@@ -336,7 +354,6 @@ with st.sidebar:
                 st.info("Margin Ratio is safe.")
     else:
         st.sidebar.warning("Not Connected 🔴")
-
     st.write("---")
     st.subheader("🌡️ Market Pulse (A+ Setups)")
     st.metric("Pump Signals Found", f"{num_pumps} 🟢")
