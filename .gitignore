@@ -1,2 +1,6 @@
 # .gitignore
 .streamlit/secrets.toml
+__pycache__/
+*.pyc
+scanner_data.db
+*.db

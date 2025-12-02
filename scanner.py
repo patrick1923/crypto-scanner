@@ -185,12 +185,9 @@ async def scan_all_markets():
     finally:
         await exchange.close()
 
-# (Daily Forecast - Unchanged)
-
 
 @st.cache_data(ttl=3600)
 def get_daily_forecast():
-    # ... (Same logic as before) ...
     try:
         exchange = ccxt.binance({'options': {'defaultType': 'future'}})
         btc_ohlcv = exchange.fetch_ohlcv('BTC/USDT', '1d', limit=3)

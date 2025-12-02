@@ -1,3 +1,7 @@
 streamlit
 pandas
 ccxt
+ccxtpro
+schedule
+plyer
+pytz
