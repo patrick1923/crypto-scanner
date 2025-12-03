@@ -22,13 +22,16 @@ from tkinter import messagebox, ttk
 import threading
 from plyer import notification
 import requests
+from dotenv import load_dotenv
+import os
 
 # --- IMPORT THE EARLY SCANNER ---
 from early_scanner import scan_early_pumps_async
 
+load_dotenv()
 
-TELEGRAM_TOKEN = "8186631543:AAE9JXG2aK9RHB7h_nAXAlKeDVBdzfce_y4"
-TELEGRAM_CHAT_ID = "-1003457158679"
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 
 def send_telegram_message(text):
