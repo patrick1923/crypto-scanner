@@ -1,6 +1,3 @@
-# early_scanner.py
-# Real-time style 1m "Early Pump" scanner for Binance Futures
-
 import asyncio
 from datetime import timezone
 import pandas as pd
