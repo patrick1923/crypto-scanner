@@ -130,37 +130,29 @@ def calculate_probability_score(row, whale_score, htf_bias, btc_score, oi_score)
 
     score = 0
 
-    # Volume
+    # Strong volume expansion
     if row['Volume Ratio'] >= 3:
-        score += 2
+        score += 3
     elif row['Volume Ratio'] >= 2:
+        score += 2
+    elif row['Volume Ratio'] >= 1.5:
         score += 1
 
-    # Contraction
-    if row['Volatility Contraction']:
-        score += 2
-
     # Liquidity + Structure
-    if row['Daily Liquidity Break']:
-        score += 2
-
     if row['Structure Break']:
         score += 2
 
-    # Whale
-    if whale_score >= 2:
-        score += 1
+    if row.get('Daily Liquidity Model', False):
+        score += 2
 
-    # HTF alignment
-    if (row['Direction'] == "buy" and htf_bias == "bullish") or \
-       (row['Direction'] == "sell" and htf_bias == "bearish"):
+    # OI strength
+    if oi_score == 1:
+        score += 2
+    elif oi_score == 0:
         score += 1
 
     # BTC regime
     score += btc_score
-
-    # Open Interest confirmation
-    score += oi_score
 
     return score
 # ============================================================
@@ -170,7 +162,7 @@ def calculate_probability_score(row, whale_score, htf_bias, btc_score, oi_score)
 async def analyze_symbol(exchange, symbol, daily_data):
 
     try:
-        # === 15M BIAS ===
+        # === 15M DATA ===
         ohlcv = await exchange.fetch_ohlcv(symbol, '15m', limit=120)
         df = pd.DataFrame(ohlcv, columns=['ts','o','h','l','c','v'])
 
@@ -178,59 +170,87 @@ async def analyze_symbol(exchange, symbol, daily_data):
             return []
 
         signal = df.iloc[-1]
-        prev_section = df.iloc[-21:-1]
+        sweep_candle = df.iloc[-2]
+        prev_section = df.iloc[-22:-2]
 
         recent_high = prev_section['h'].max()
         recent_low = prev_section['l'].min()
 
         direction = None
         structure_break = False
+        liquidity_model = False
 
-        # CONTINUATION BREAK
-        if signal['c'] > recent_high:
-            direction = "buy"
-            structure_break = True
-        elif signal['c'] < recent_low:
-            direction = "sell"
-            structure_break = True
-        else:
+        if not daily_data:
             return []
 
-        # === VOLUME EXPANSION ===
+        prev_day_high = daily_data['high']
+        prev_day_low = daily_data['low']
+
+        # ==========================
+        # BUY SIDE MODEL
+        # ==========================
+        sweep_up = (
+            sweep_candle['h'] > prev_day_high and
+            sweep_candle['c'] < prev_day_high
+        )
+
+        displacement_up = (
+            signal['c'] > sweep_candle['h'] and
+            (signal['h'] - signal['l']) >
+            prev_section['h'].sub(prev_section['l']).mean() * 1.5
+        )
+
+        continuation_up = signal['c'] > recent_high
+
+        if sweep_up and displacement_up and continuation_up:
+            direction = "buy"
+            structure_break = True
+            liquidity_model = True
+
+        # ==========================
+        # SELL SIDE MODEL
+        # ==========================
+        sweep_down = (
+            sweep_candle['l'] < prev_day_low and
+            sweep_candle['c'] > prev_day_low
+        )
+
+        displacement_down = (
+            signal['c'] < sweep_candle['l'] and
+            (signal['h'] - signal['l']) >
+            prev_section['h'].sub(prev_section['l']).mean() * 1.5
+        )
+
+        continuation_down = signal['c'] < recent_low
+
+        if sweep_down and displacement_down and continuation_down:
+            direction = "sell"
+            structure_break = True
+            liquidity_model = True
+
+        if not liquidity_model:
+            return []
+
+        # ==========================
+        # VOLUME CONFIRMATION
+        # ==========================
         avg_vol = prev_section['v'].mean()
         volume_ratio = signal['v'] / avg_vol if avg_vol > 0 else 0
 
-        if volume_ratio < 2:
+        if volume_ratio < 1.5:
             return []
 
-        # === DAILY CONTINUATION CONFIRMATION ===
-        daily_break = False
+       
 
-        if daily_data:
-            prev_day_high = daily_data['high']
-            prev_day_low = daily_data['low']
-
-            if direction == "buy" and signal['c'] > prev_day_high:
-                daily_break = True
-
-            if direction == "sell" and signal['c'] < prev_day_low:
-                daily_break = True
-
-        if not daily_break:
-            return []
-
-        # === OI CONFIRMATION ===
-        oi_score = await get_open_interest_score(exchange, symbol)
-        if oi_score != 1:
-            return []
-
-        # === 1M MOMENTUM CONFIRMATION ===
+        # ==========================
+        # 1M DISPLACEMENT CHECK
+        # ==========================
         one_min = await exchange.fetch_ohlcv(symbol, '1m', limit=10)
         last = one_min[-1]
-        avg_range = sum([c[2]-c[3] for c in one_min[:-1]]) / 9
-        displacement = (last[2] - last[3]) > avg_range * 2
+        avg_range = sum([c[2] - c[3] for c in one_min[:-1]]) / 9
+        displacement_1m = (last[2] - last[3]) > avg_range * 1.2
 
-        if not displacement:
+        if not displacement_1m:
             return []
 
         return [{
@@ -238,7 +258,7 @@ async def analyze_symbol(exchange, symbol, daily_data):
             "Direction": direction,
             "Volume Ratio": volume_ratio,
             "Structure Break": structure_break,
-            "Daily Break": daily_break
+            "Daily Liquidity Model": liquidity_model
         }]
 
     except Exception as e:
@@ -291,9 +311,9 @@ async def get_open_interest_score(exchange, symbol):
 
         change_pct = (second_half - first_half) / first_half
 
-        if change_pct > 0.02:
+        if change_pct > 0.01:
             return 1   # strong build-up
-        elif change_pct < -0.02:
+        elif change_pct < -0.01:
             return -1  # position closing
         else:
             return 0
@@ -422,7 +442,7 @@ async def scan_all():
                     oi_score=oi_score
                 )
 
-                if probability < 8:
+                if probability < 5:
                     continue
 
                 # ===============================
@@ -483,8 +503,17 @@ async def scan_all():
 
         for setup in top5:
 
+            if setup['score'] >= 8:
+                grade = "A+"
+            elif setup['score'] >= 7:
+                grade = "A"
+            elif setup['score'] >= 6:
+                grade = "B"
+            else:
+                grade = "C"
+
             line = (
-                f"{setup['symbol']} | Score: {setup['score']}\n"
+                f"{setup['symbol']} | Score: {setup['score']} | Grade: {grade}\n"
                 f"Direction: {setup['direction'].upper()}\n"
                 f"Entry: {setup['entry']:.6f}\n"
                 f"SL: {setup['sl']:.6f}\n"
