@@ -9,6 +9,7 @@ import time
 from datetime import datetime, timedelta
 import pytz
 import requests
+from database import log_liquidity_context
 
 # ================= TELEGRAM =================
 
@@ -74,6 +75,38 @@ async def preload_daily_levels(exchange, symbols):
     return daily_levels
 
 # ============================================================
+# MODEL ACTION ENGINE
+# ============================================================
+
+def get_model_action(structure, impulse, behavior, volume, volatility):
+
+    if structure == "Bullish":
+
+        if behavior == "Compression" and volume == "Increasing":
+            return "Breakout Continuation Likely", "Wait for 1m base then expansion break."
+
+        if behavior == "Expansion" and volume == "Increasing":
+            return "Momentum Active", "Wait for pullback before continuation entry."
+
+        if behavior == "Compression" and volume == "Decreasing":
+            return "Liquidity Building", "Wait for volume expansion confirmation."
+
+        return "Unclear Bullish Condition", "No trade. Wait for cleaner setup."
+
+    else:
+
+        if behavior == "Compression" and volume == "Increasing":
+            return "Breakdown Continuation Likely", "Wait for 1m breakdown with expansion."
+
+        if behavior == "Expansion" and volume == "Increasing":
+            return "Bearish Momentum Active", "Wait for pullback before short continuation."
+
+        if behavior == "Compression" and volume == "Decreasing":
+            return "Liquidity Building Below", "Wait for expansion before short."
+
+        return "Unclear Bearish Condition", "No trade. Wait for cleaner setup."
+
+# ============================================================
 # MAIN SCAN
 # ============================================================
 
@@ -87,9 +120,6 @@ async def scan_all():
         print("🔄 Starting Liquidity Radar Scan...")
         send_telegram_message("🔄 <b>Liquidity Radar Scan Started</b>")
 
-        # ===============================
-        # GET TOP 50 BY 24H VOLUME
-        # ===============================
         tickers = await exchange.fetch_tickers()
 
         usdt_futures = {
@@ -108,16 +138,10 @@ async def scan_all():
 
         print(f"Selected Top {len(symbols)} ultra-liquid pairs.")
 
-        # ===============================
-        # PRELOAD DAILY LEVELS
-        # ===============================
         daily_levels = await preload_daily_levels(exchange, symbols)
 
         alerts = []
 
-        # ===============================
-        # SCAN SYMBOLS
-        # ===============================
         for symbol in symbols:
 
             if symbol not in daily_levels:
@@ -133,66 +157,134 @@ async def scan_all():
                 distance_high = abs(current_price - prev_day_high) / prev_day_high
                 distance_low = abs(current_price - prev_day_low) / prev_day_low
 
-                # ===============================
-            # Get 15m data for volume + volatility check
-            # Skip pairs with missing or zero data
-            # ===============================
                 try:
                     ohlcv = await exchange.fetch_ohlcv(symbol, '15m', limit=21)
-                    if not ohlcv or len(ohlcv) < 2:
-                        continue  # skip if no data
+                    if not ohlcv or len(ohlcv) < 21:
+                        continue
 
                     df = pd.DataFrame(ohlcv, columns=['ts','o','h','l','c','v'])
                     last = df.iloc[-1]
 
                     avg_volume = df['v'].iloc[:-1].mean()
-                    if avg_volume == 0 or last['v'] == 0:
-                        continue  # skip zero volume
+                    avg_range = (df['h'] - df['l']).iloc[:-1].mean()
+
+                    if avg_volume == 0 or avg_range == 0:
+                        continue
 
                     volume_ratio = last['v'] / avg_volume
+                    volatility_ratio = (last['h'] - last['l']) / avg_range
 
-                    avg_range = (df['h'] - df['l']).iloc[:-1].mean()
-                    if avg_range == 0:
-                        continue  # skip zero range
+                    # ---- SIMPLE CONTEXT CLASSIFICATION ----
+                    structure = "Bullish" if df['c'].iloc[-1] > df['c'].iloc[-5] else "Bearish"
 
-                    current_range = last['h'] - last['l']
-                    volatility_ratio = current_range / avg_range
+                    impulse_strength = (
+                        "Strong Expansion" if volatility_ratio > 1.5
+                        else "Moderate" if volatility_ratio > 1.0
+                        else "Weak"
+                    )
+
+                    behavior = (
+                        "Compression" if volatility_ratio < 0.8
+                        else "Expansion" if volatility_ratio > 1.2
+                        else "Normal"
+                    )
+
+                    volume_state = (
+                        "Increasing" if volume_ratio > 1.2
+                        else "Decreasing" if volume_ratio < 0.8
+                        else "Stable"
+                    )
+
+                    volatility_state = (
+                        "Expanding" if volatility_ratio > 1.2
+                        else "Contracting" if volatility_ratio < 0.8
+                        else "Stable"
+                    )
 
                 except:
-                    continue  # skip on any fetch error
+                    continue
 
                 # ===============================
                 # PDH APPROACH
                 # ===============================
                 if distance_high <= DISTANCE_THRESHOLD:
 
-                    alerts.append(
-                        f"{symbol}\n"
-                        f"Approaching PDH\n"
-                        f"Distance: {distance_high*100:.2f}%\n"
-                        f"Volume Ratio: {volume_ratio:.2f}\n"
-                        f"Volatility Ratio: {volatility_ratio:.2f}\n"
+                    model_bias, action = get_model_action(
+                        structure,
+                        impulse_strength,
+                        behavior,
+                        volume_state,
+                        volatility_state
                     )
+
+                    alerts.append(
+                        f"{symbol} approaching PDH ({distance_high*100:.2f}%)\n\n"
+                        f"Context:\n"
+                        f"• 15m Structure: {structure}\n"
+                        f"• Impulse: {impulse_strength}\n"
+                        f"• Behavior: {behavior}\n"
+                        f"• Volume: {volume_state}\n"
+                        f"• Volatility: {volatility_state}\n\n"
+                        f"Model Bias:\n"
+                        f"→ {model_bias}\n"
+                        f"Action:\n"
+                        f"{action}\n"
+                    )
+
+                    log_liquidity_context({
+                        "symbol": symbol,
+                        "level_type": "PDH",
+                        "distance_percent": distance_high * 100,
+                        "structure": structure,
+                        "impulse_strength": impulse_strength,
+                        "behavior": behavior,
+                        "volume_state": volume_state,
+                        "volatility_state": volatility_state,
+                        "model_bias": model_bias
+                    })
 
                 # ===============================
                 # PDL APPROACH
                 # ===============================
                 elif distance_low <= DISTANCE_THRESHOLD:
 
-                    alerts.append(
-                        f"{symbol}\n"
-                        f"Approaching PDL\n"
-                        f"Distance: {distance_low*100:.2f}%\n"
-                        f"Volume Ratio: {volume_ratio:.2f}\n"
-                        f"Volatility Ratio: {volatility_ratio:.2f}\n"
+                    model_bias, action = get_model_action(
+                        structure,
+                        impulse_strength,
+                        behavior,
+                        volume_state,
+                        volatility_state
                     )
+
+                    alerts.append(
+                        f"{symbol} approaching PDL ({distance_low*100:.2f}%)\n\n"
+                        f"Context:\n"
+                        f"• 15m Structure: {structure}\n"
+                        f"• Impulse: {impulse_strength}\n"
+                        f"• Behavior: {behavior}\n"
+                        f"• Volume: {volume_state}\n"
+                        f"• Volatility: {volatility_state}\n\n"
+                        f"Model Bias:\n"
+                        f"→ {model_bias}\n"
+                        f"Action:\n"
+                        f"{action}\n"
+                    )
+
+                    log_liquidity_context({
+                        "symbol": symbol,
+                        "level_type": "PDL",
+                        "distance_percent": distance_low * 100,
+                        "structure": structure,
+                        "impulse_strength": impulse_strength,
+                        "behavior": behavior,
+                        "volume_state": volume_state,
+                        "volatility_state": volatility_state,
+                        "model_bias": model_bias
+                    })
 
             except:
                 continue
 
-        # ===============================
-        # SEND TELEGRAM ALERT
-        # ===============================
         if alerts:
 
             countdown = get_daily_countdown()
@@ -217,7 +309,6 @@ async def scan_all():
     finally:
         await exchange.close()
         print("Exchange session closed cleanly.")
-
 # ============================================================
 # LOOP
 # ============================================================

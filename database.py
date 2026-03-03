@@ -2,19 +2,20 @@ import sqlite3
 import pandas as pd
 from datetime import datetime, timedelta
 
-DB_FILE = "scanner_data.db"
+DB_FILE = "scanner_data.sql"
 
 
 def create_tables():
-    """Create tables for 2H signals, popup history, and position logs."""
+    """Create tables for scanner signals, popup history, positions, and liquidity context."""
     with sqlite3.connect(DB_FILE) as conn:
-        # --- 2H / SCANNER SIGNALS TABLE (original) ---
+
+        # --- 2H / SCANNER SIGNALS TABLE ---
         conn.execute("""
             CREATE TABLE IF NOT EXISTS signals (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 scan_time TEXT NOT NULL,
                 symbol TEXT NOT NULL,
-                signal_type TEXT NOT NULL,   -- Pump / Dump / etc.
+                signal_type TEXT NOT NULL,
                 signal_price REAL,
                 grade TEXT,
                 analysis TEXT,
@@ -29,13 +30,13 @@ def create_tables():
             )
         """)
 
-        # --- POPUP SIGNALS HISTORY TABLE (new) ---
+        # --- POPUP SIGNALS HISTORY TABLE ---
         conn.execute("""
             CREATE TABLE IF NOT EXISTS popup_signals (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 popup_time TEXT NOT NULL,
                 symbol TEXT NOT NULL,
-                side TEXT NOT NULL,           -- buy / sell
+                side TEXT NOT NULL,
                 grade TEXT,
                 analysis TEXT,
                 entry_price REAL,
@@ -44,13 +45,13 @@ def create_tables():
                 tp2 REAL,
                 size REAL,
                 whale_score INTEGER,
-                signal_origin TEXT,          -- '2H' or '1M' etc.
-                outcome TEXT DEFAULT 'Pending',  -- Win / Loss / BE / Skipped
+                signal_origin TEXT,
+                outcome TEXT DEFAULT 'Pending',
                 notes TEXT DEFAULT ''
             )
         """)
 
-        # --- POSITIONS LOG TABLE (same as before) ---
+        # --- POSITIONS LOG TABLE ---
         conn.execute("""
             CREATE TABLE IF NOT EXISTS positions_log (
                 log_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -65,15 +66,33 @@ def create_tables():
             )
         """)
 
+        # --- LIQUIDITY CONTEXT LOGS (NEW) ---
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS liquidity_context (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                alert_time TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                level_type TEXT NOT NULL,
+                distance_percent REAL,
+
+                structure TEXT,
+                impulse_strength TEXT,
+                behavior TEXT,
+                volume_state TEXT,
+                volatility_state TEXT,
+
+                model_bias TEXT,
+                outcome TEXT DEFAULT 'Pending',
+                notes TEXT DEFAULT ''
+            )
+        """)
+
 
 # -------------------------------------------------------------------
-# 2H / scanner signals logging  (used by local_scanner_v2.py)
+# 2H / scanner signals logging
 # -------------------------------------------------------------------
 def log_signals(signals_df, signal_type):
-    """
-    Logs new 2H scanner signals to the `signals` table using KSA time.
-    This is the original function that local_scanner_v2.py calls.
-    """
+
     if signals_df is None or signals_df.empty:
         return
 
@@ -94,8 +113,8 @@ def log_signals(signals_df, signal_type):
             row.get('24h Volume', None),
             1 if row.get('Volatility Contraction', False) else 0,
             row.get('Dominant Pressure', None),
-            None,    # outcome
-            None,    # notes
+            None,
+            None,
             'Active'
         ))
 
@@ -111,42 +130,55 @@ def log_signals(signals_df, signal_type):
         conn.commit()
 
 
-def get_recent_signals(limit=50):
-    """Fetch latest active 2H signals."""
-    with sqlite3.connect(DB_FILE) as conn:
-        query = """
-            SELECT *
-            FROM signals
-            WHERE status = 'Active'
-            ORDER BY datetime(scan_time) DESC
-            LIMIT ?
-        """
-        return pd.read_sql_query(query, conn, params=(limit,))
+# -------------------------------------------------------------------
+# LIQUIDITY CONTEXT LOGGING (NEW)
+# -------------------------------------------------------------------
+def log_liquidity_context(context_dict):
 
+    ksa_time = datetime.utcnow() + timedelta(hours=3)
+    alert_time = ksa_time.strftime('%Y-%m-%d %H:%M:%S')
 
-def mark_signal_expired(symbol):
-    """Marks a 2H signal as expired by symbol."""
     with sqlite3.connect(DB_FILE) as conn:
         conn.execute("""
-            UPDATE signals
-            SET status = 'Expired'
-            WHERE symbol = ? AND status = 'Active'
-        """, (symbol,))
+            INSERT INTO liquidity_context (
+                alert_time, symbol, level_type, distance_percent,
+                structure, impulse_strength, behavior,
+                volume_state, volatility_state,
+                model_bias, outcome, notes
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            alert_time,
+            context_dict.get("symbol"),
+            context_dict.get("level_type"),
+            context_dict.get("distance_percent"),
+            context_dict.get("structure"),
+            context_dict.get("impulse_strength"),
+            context_dict.get("behavior"),
+            context_dict.get("volume_state"),
+            context_dict.get("volatility_state"),
+            context_dict.get("model_bias"),
+            "Pending",
+            ""
+        ))
+        conn.commit()
+
+
+def update_liquidity_outcome(id_value, outcome, notes=""):
+    with sqlite3.connect(DB_FILE) as conn:
+        conn.execute("""
+            UPDATE liquidity_context
+            SET outcome = ?, notes = ?
+            WHERE id = ?
+        """, (outcome, notes, id_value))
         conn.commit()
 
 
 # -------------------------------------------------------------------
-# Popup history logging (every popup you see)
+# POPUP HISTORY
 # -------------------------------------------------------------------
 def log_popup_signal(signal_dict):
-    """
-    Records EVERY popup into the popup_signals table.
 
-    signal_dict expected keys:
-      symbol, side, grade, analysis,
-      entry_price, stop_loss, tp1, tp2, size,
-      whale_score, signal_origin
-    """
     ksa_time = datetime.utcnow() + timedelta(hours=3)
     popup_time = ksa_time.strftime('%Y-%m-%d %H:%M:%S')
 
@@ -178,9 +210,6 @@ def log_popup_signal(signal_dict):
 
 
 def update_outcome(id_value, outcome, notes=""):
-    """
-    Manually set WIN / LOSS / BE / SKIPPED plus notes for a popup signal.
-    """
     with sqlite3.connect(DB_FILE) as conn:
         conn.execute("""
             UPDATE popup_signals
@@ -191,7 +220,6 @@ def update_outcome(id_value, outcome, notes=""):
 
 
 def get_popup_history(limit=200):
-    """Return popup signals sorted by newest first."""
     with sqlite3.connect(DB_FILE) as conn:
         query = """
             SELECT *
@@ -203,10 +231,10 @@ def get_popup_history(limit=200):
 
 
 # -------------------------------------------------------------------
-# Positions log (unchanged)
+# POSITIONS LOG
 # -------------------------------------------------------------------
 def log_position_snapshot(positions_df):
-    """Logs open positions to the positions_log table."""
+
     if positions_df is None or positions_df.empty:
         return
 
