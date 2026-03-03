@@ -9,12 +9,15 @@ import time
 from datetime import datetime, timedelta
 import pytz
 import requests
+import os
 from database import log_liquidity_context
+from dotenv import load_dotenv
+load_dotenv()
 
 # ================= TELEGRAM =================
 
-TELEGRAM_TOKEN = "8186631543:AAF8IX7WYCvy-lC78P95aBYzK0wfu0jZlrg"
-TELEGRAM_CHAT_ID = "8479800068"
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 def send_telegram_message(text: str):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
