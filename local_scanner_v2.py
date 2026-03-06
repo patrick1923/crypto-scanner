@@ -108,6 +108,26 @@ def get_model_action(structure, impulse, behavior, volume, volatility):
             return "Liquidity Building Below", "Wait for expansion before short."
 
         return "Unclear Bearish Condition", "No trade. Wait for cleaner setup."
+    
+################################################
+
+def wait_until_next_5min():
+
+    now = datetime.utcnow()
+
+    next_minute = (now.minute // 5 + 1) * 5
+    next_time = now.replace(second=0, microsecond=0)
+
+    if next_minute == 60:
+        next_time = next_time.replace(minute=0) + timedelta(hours=1)
+    else:
+        next_time = next_time.replace(minute=next_minute)
+
+    wait_seconds = (next_time - now).total_seconds()
+
+    print(f"Next scan aligned in {int(wait_seconds)} seconds.")
+
+    time.sleep(wait_seconds)
 
 # ============================================================
 # MAIN SCAN
@@ -121,7 +141,8 @@ async def scan_all():
         await exchange.load_markets()
 
         print("🔄 Starting Liquidity Radar Scan...")
-        send_telegram_message("🔄 <b>Liquidity Radar Scan Started</b>")
+        separator = "\n━━━━━━━━━━━━━━━━━━━━\n"
+        
 
         tickers = await exchange.fetch_tickers()
 
@@ -221,18 +242,26 @@ async def scan_all():
                     )
 
                     alerts.append(
-                        f"{symbol} approaching PDH ({distance_high*100:.2f}%)\n\n"
+                        f"{symbol}\n"
+                        f"Price: {current_price}\n"
+                        f"PDH: {prev_day_high}\n"
+                        f"PDL: {prev_day_low}\n\n"
+
+                        f"Approaching PDH ({distance_high*100:.2f}%)\n\n"
+
                         f"Context:\n"
                         f"• 15m Structure: {structure}\n"
                         f"• Impulse: {impulse_strength}\n"
                         f"• Behavior: {behavior}\n"
                         f"• Volume: {volume_state}\n"
                         f"• Volatility: {volatility_state}\n\n"
+
                         f"Model Bias:\n"
                         f"→ {model_bias}\n"
                         f"Action:\n"
                         f"{action}\n"
                     )
+                    alerts.append(separator)
 
                     log_liquidity_context({
                         "symbol": symbol,
@@ -258,20 +287,29 @@ async def scan_all():
                         volume_state,
                         volatility_state
                     )
+                    
 
                     alerts.append(
-                        f"{symbol} approaching PDL ({distance_low*100:.2f}%)\n\n"
+                        f"{symbol}\n"
+                        f"Price: {current_price}\n"
+                        f"PDH: {prev_day_high}\n"
+                        f"PDL: {prev_day_low}\n\n"
+
+                        f"Approaching PDL ({distance_low*100:.2f}%)\n\n"
+
                         f"Context:\n"
                         f"• 15m Structure: {structure}\n"
                         f"• Impulse: {impulse_strength}\n"
                         f"• Behavior: {behavior}\n"
                         f"• Volume: {volume_state}\n"
                         f"• Volatility: {volatility_state}\n\n"
+
                         f"Model Bias:\n"
                         f"→ {model_bias}\n"
                         f"Action:\n"
                         f"{action}\n"
                     )
+                    alerts.append(separator)
 
                     log_liquidity_context({
                         "symbol": symbol,
@@ -293,7 +331,7 @@ async def scan_all():
             countdown = get_daily_countdown()
 
             message = (
-                f"⚠️ <b>LIQUIDITY RADAR</b>\n\n"
+                f"⚠️ <b>RADAR</b>\n\n"
                 f"Daily Candle Close In: {countdown}\n\n"
             )
 
@@ -322,8 +360,13 @@ def run_scan():
 if __name__ == "__main__":
 
     print("=== Liquidity Radar Started ===")
+    
 
     while True:
+
+        wait_until_next_5min()
+
+        print("\n🔄 Running synchronized scan...\n")
+        print(f"\nSCAN TIME UTC: {datetime.utcnow().strftime('%H:%M:%S')}")
+
         run_scan()
-        print("Waiting 5 minutes...\n")
-        time.sleep(300)
