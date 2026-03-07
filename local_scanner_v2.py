@@ -145,11 +145,13 @@ async def scan_all():
         
 
         tickers = await exchange.fetch_tickers()
+        EXCLUDED_PAIRS = ["XAU/USDT:USDT", "XAG/USDT:USDT"]
 
         usdt_futures = {
             symbol: data for symbol, data in tickers.items()
             if symbol.endswith(':USDT')
             and data.get('quoteVolume') is not None
+            and symbol not in EXCLUDED_PAIRS
         }
 
         sorted_symbols = sorted(
