@@ -140,11 +140,19 @@ async def scan_all():
     try:
         await exchange.load_markets()
 
-        print("🔄 Starting Liquidity Radar Scan...")
+        print("🔄 Starting Liquidity Radar Scan.")
+
         separator = "\n━━━━━━━━━━━━━━━━━━━━\n"
-        
+
+        donation_message = (
+            "\n💙If this tool helps your trading,\n"
+            "you can support development:\n\n"
+            "USDT BSC BEP20\n"
+            "0x7070f252c95df9a42a9c4df536b4166927a5e670\n"
+        )
 
         tickers = await exchange.fetch_tickers()
+
         EXCLUDED_PAIRS = ["XAU/USDT:USDT", "XAG/USDT:USDT"]
 
         usdt_futures = {
@@ -174,8 +182,22 @@ async def scan_all():
                 continue
 
             try:
+
                 ticker = await exchange.fetch_ticker(symbol)
                 current_price = ticker['last']
+
+                funding_rate = None
+                try:
+                    funding = await exchange.fetch_funding_rate(symbol)
+                    funding_rate = funding['fundingRate']
+                except:
+                    funding_rate = None
+
+                # FORMAT FUNDING RATE FOR TELEGRAM
+                if funding_rate is not None:
+                    funding_text = f"{funding_rate * 100:.4f}%"
+                else:
+                    funding_text = "N/A"
 
                 prev_day_high = daily_levels[symbol]['high']
                 prev_day_low = daily_levels[symbol]['low']
@@ -183,56 +205,135 @@ async def scan_all():
                 distance_high = abs(current_price - prev_day_high) / prev_day_high
                 distance_low = abs(current_price - prev_day_low) / prev_day_low
 
-                try:
-                    ohlcv = await exchange.fetch_ohlcv(symbol, '15m', limit=21)
-                    if not ohlcv or len(ohlcv) < 21:
-                        continue
+                # ===============================
+                # FETCH 15m DATA
+                # ===============================
 
-                    df = pd.DataFrame(ohlcv, columns=['ts','o','h','l','c','v'])
-                    last = df.iloc[-1]
+                ohlcv = await exchange.fetch_ohlcv(symbol, '15m', limit=21)
 
-                    avg_volume = df['v'].iloc[:-1].mean()
-                    avg_range = (df['h'] - df['l']).iloc[:-1].mean()
-
-                    if avg_volume == 0 or avg_range == 0:
-                        continue
-
-                    volume_ratio = last['v'] / avg_volume
-                    volatility_ratio = (last['h'] - last['l']) / avg_range
-
-                    # ---- SIMPLE CONTEXT CLASSIFICATION ----
-                    structure = "Bullish" if df['c'].iloc[-1] > df['c'].iloc[-5] else "Bearish"
-
-                    impulse_strength = (
-                        "Strong Expansion" if volatility_ratio > 1.5
-                        else "Moderate" if volatility_ratio > 1.0
-                        else "Weak"
-                    )
-
-                    behavior = (
-                        "Compression" if volatility_ratio < 0.8
-                        else "Expansion" if volatility_ratio > 1.2
-                        else "Normal"
-                    )
-
-                    volume_state = (
-                        "Increasing" if volume_ratio > 1.2
-                        else "Decreasing" if volume_ratio < 0.8
-                        else "Stable"
-                    )
-
-                    volatility_state = (
-                        "Expanding" if volatility_ratio > 1.2
-                        else "Contracting" if volatility_ratio < 0.8
-                        else "Stable"
-                    )
-
-                except:
+                if not ohlcv or len(ohlcv) < 21:
                     continue
 
+                df = pd.DataFrame(ohlcv, columns=['ts','o','h','l','c','v'])
+
+                last = df.iloc[-1]
+                prev = df.iloc[-2]
+
                 # ===============================
-                # PDH APPROACH
+                # VOLUME + VOLATILITY BASELINES
                 # ===============================
+
+                avg_volume = df['v'].iloc[:-1].mean()
+                avg_range = (df['h'] - df['l']).iloc[:-1].mean()
+
+                if avg_volume == 0 or avg_range == 0:
+                    continue
+
+                volume_ratio = last['v'] / avg_volume
+                volatility_ratio = (last['h'] - last['l']) / avg_range
+
+                # ===============================
+                # LIQUIDITY SWEEP DETECTION
+                # ===============================
+
+                pdl_sweep = (
+                    prev['l'] < prev_day_low and
+                    prev['c'] > prev_day_low
+                )
+
+                pdh_sweep = (
+                    prev['h'] > prev_day_high and
+                    prev['c'] < prev_day_high
+                )
+
+                reversal_volume = volume_ratio > 1.2
+                reversal_volatility = volatility_ratio > 1.1
+
+                # ===============================
+                # SWEEP STRENGTH SCORE
+                # ===============================
+
+                wick_size = abs(prev['h'] - prev['l'])
+                body_size = abs(prev['c'] - prev['o'])
+
+                wick_ratio = wick_size / body_size if body_size > 0 else 0
+
+                score = 0
+
+                if wick_ratio > 2:
+                    score += 3
+
+                if volume_ratio > 1.3:
+                    score += 3
+
+                if volatility_ratio > 1.2:
+                    score += 2
+
+                if pdl_sweep or pdh_sweep:
+                    score += 2
+
+                sweep_strength = min(score, 10)
+
+                # ===============================
+                # CONTEXT CLASSIFICATION
+                # ===============================
+
+                structure = "Bullish" if df['c'].iloc[-1] > df['c'].iloc[-5] else "Bearish"
+
+                impulse_strength = (
+                    "Strong Expansion" if volatility_ratio > 1.5
+                    else "Moderate" if volatility_ratio > 1.0
+                    else "Weak"
+                )
+
+                behavior = (
+                    "Compression" if volatility_ratio < 0.8
+                    else "Expansion" if volatility_ratio > 1.2
+                    else "Normal"
+                )
+
+                volume_state = (
+                    "Increasing" if volume_ratio > 1.2
+                    else "Decreasing" if volume_ratio < 0.8
+                    else "Stable"
+                )
+
+                volatility_state = (
+                    "Expanding" if volatility_ratio > 1.2
+                    else "Contracting" if volatility_ratio < 0.8
+                    else "Stable"
+                )
+
+                # ===============================
+                # REVERSAL DETECTION
+                # ===============================
+
+                if pdl_sweep and sweep_strength >= 6:
+
+                    alerts.append(
+                        f"🔥 {symbol}\n"
+                        f"Potential Bullish Reversal\n"
+                        f"Sweep Strength: {sweep_strength}/10\n"
+                        f"Funding Rate: {funding_text}\n"
+                        f"Liquidity Grab Below PDL\n"
+                    )
+                    alerts.append(separator)
+
+                elif pdh_sweep and sweep_strength >= 6:
+
+                    alerts.append(
+                        f"🔥 {symbol}\n"
+                        f"Potential Bearish Reversal\n"
+                        f"Sweep Strength: {sweep_strength}/10\n"
+                        f"Funding Rate: {funding_text}\n"
+                        f"Liquidity Grab Above PDH\n"
+                    )
+                    alerts.append(separator)
+
+                # ===============================
+                # ORIGINAL RADAR (UNCHANGED)
+                # ===============================
+
                 if distance_high <= DISTANCE_THRESHOLD:
 
                     model_bias, action = get_model_action(
@@ -248,38 +349,21 @@ async def scan_all():
                         f"Price: {current_price}\n"
                         f"PDH: {prev_day_high}\n"
                         f"PDL: {prev_day_low}\n\n"
-
                         f"Approaching PDH ({distance_high*100:.2f}%)\n\n"
-
                         f"Context:\n"
                         f"• 15m Structure: {structure}\n"
                         f"• Impulse: {impulse_strength}\n"
                         f"• Behavior: {behavior}\n"
                         f"• Volume: {volume_state}\n"
                         f"• Volatility: {volatility_state}\n\n"
-
                         f"Model Bias:\n"
                         f"→ {model_bias}\n"
                         f"Action:\n"
                         f"{action}\n"
                     )
+
                     alerts.append(separator)
 
-                    log_liquidity_context({
-                        "symbol": symbol,
-                        "level_type": "PDH",
-                        "distance_percent": distance_high * 100,
-                        "structure": structure,
-                        "impulse_strength": impulse_strength,
-                        "behavior": behavior,
-                        "volume_state": volume_state,
-                        "volatility_state": volatility_state,
-                        "model_bias": model_bias
-                    })
-
-                # ===============================
-                # PDL APPROACH
-                # ===============================
                 elif distance_low <= DISTANCE_THRESHOLD:
 
                     model_bias, action = get_model_action(
@@ -289,44 +373,33 @@ async def scan_all():
                         volume_state,
                         volatility_state
                     )
-                    
 
                     alerts.append(
                         f"{symbol}\n"
                         f"Price: {current_price}\n"
                         f"PDH: {prev_day_high}\n"
                         f"PDL: {prev_day_low}\n\n"
-
                         f"Approaching PDL ({distance_low*100:.2f}%)\n\n"
-
                         f"Context:\n"
                         f"• 15m Structure: {structure}\n"
                         f"• Impulse: {impulse_strength}\n"
                         f"• Behavior: {behavior}\n"
                         f"• Volume: {volume_state}\n"
                         f"• Volatility: {volatility_state}\n\n"
-
                         f"Model Bias:\n"
                         f"→ {model_bias}\n"
                         f"Action:\n"
                         f"{action}\n"
                     )
-                    alerts.append(separator)
 
-                    log_liquidity_context({
-                        "symbol": symbol,
-                        "level_type": "PDL",
-                        "distance_percent": distance_low * 100,
-                        "structure": structure,
-                        "impulse_strength": impulse_strength,
-                        "behavior": behavior,
-                        "volume_state": volume_state,
-                        "volatility_state": volatility_state,
-                        "model_bias": model_bias
-                    })
+                    alerts.append(separator)
 
             except:
                 continue
+
+        # ===============================
+        # TELEGRAM SEND
+        # ===============================
 
         if alerts:
 
@@ -340,16 +413,23 @@ async def scan_all():
             for alert in alerts:
                 message += alert + "\n"
 
+            message += separator
+            message += donation_message
+
             send_telegram_message(message)
+
             print("Liquidity alerts sent.")
 
         else:
+
             print("No liquidity proximity detected.")
 
     except Exception as e:
+
         print(f"Scan error: {e}")
 
     finally:
+
         await exchange.close()
         print("Exchange session closed cleanly.")
 # ============================================================

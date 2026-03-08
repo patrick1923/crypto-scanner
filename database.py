@@ -2,7 +2,7 @@ import sqlite3
 import pandas as pd
 from datetime import datetime, timedelta
 
-DB_FILE = "scanner_data.sql"
+DB_FILE = "scanner_data.db"
 
 
 def create_tables():
