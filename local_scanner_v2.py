@@ -4,7 +4,7 @@ if sys.platform == 'win32':
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 import pandas as pd
-import ccxt.pro as ccxt_pro
+import ccxt
 import time
 from datetime import datetime, timedelta
 import pytz
@@ -135,7 +135,9 @@ def wait_until_next_5min():
 
 async def scan_all():
 
-    exchange = ccxt_pro.binance({'options': {'defaultType': 'future'}})
+    exchange = ccxt.binance({
+    "enableRateLimit": True
+})
 
     try:
         await exchange.load_markets()
@@ -451,9 +453,5 @@ if __name__ == "__main__":
 
     while True:
 
-        wait_until_next_5min()
-
-        print("\n🔄 Running synchronized scan...\n")
-        print(f"\nSCAN TIME UTC: {datetime.utcnow().strftime('%H:%M:%S')}")
 
         run_scan()

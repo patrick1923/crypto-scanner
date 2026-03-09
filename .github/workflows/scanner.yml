@@ -1,8 +1,8 @@
-name: Run Crypto Scanner
+name: Crypto Scanner
 
 on:
   schedule:
-    - cron: '0 0 * * *'   # runs once per day
+    - cron: '*/5 * * * *'   # every 5 minutes
   workflow_dispatch:
 
 jobs:
@@ -11,17 +11,20 @@ jobs:
 
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v3
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v4
         with:
-          python-version: "3.14.2"
+          python-version: '3.10'
 
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
 
-      - name: Run scanner for 6 hours
+      - name: Run scanner
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          timeout 21600 python local_scanner_v2.py
+          python local_scanner_v2.py
