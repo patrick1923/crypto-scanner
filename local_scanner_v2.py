@@ -193,17 +193,10 @@ async def scan_all():
                 except:
                     funding_rate = None
 
-                # FORMAT FUNDING RATE FOR TELEGRAM
-                if funding_rate is not None:
-                    funding_text = f"{funding_rate * 100:.4f}%"
-                else:
-                    funding_text = "N/A"
+                funding_text = f"{funding_rate * 100:.4f}%" if funding_rate else "N/A"
 
                 prev_day_high = daily_levels[symbol]['high']
                 prev_day_low = daily_levels[symbol]['low']
-
-                distance_high = abs(current_price - prev_day_high) / prev_day_high
-                distance_low = abs(current_price - prev_day_low) / prev_day_low
 
                 # ===============================
                 # FETCH 15m DATA
@@ -218,6 +211,23 @@ async def scan_all():
 
                 last = df.iloc[-1]
                 prev = df.iloc[-2]
+
+                # ===============================
+                # LIQUIDITY STACK ANALYSIS
+                # ===============================
+
+                lookback = 10
+                candles = df.iloc[-lookback:]
+
+                above_pdh = sum(c['h'] > prev_day_high for _, c in candles.iterrows())
+                below_pdl = sum(c['l'] < prev_day_low for _, c in candles.iterrows())
+
+                if above_pdh > below_pdl and above_pdh >= 3:
+                    liquidity_bias = "Liquidity Stacked Above PDH 🔼"
+                elif below_pdl > above_pdh and below_pdl >= 3:
+                    liquidity_bias = "Liquidity Stacked Below PDL 🔽"
+                else:
+                    liquidity_bias = "Balanced Liquidity ⚖️"
 
                 # ===============================
                 # VOLUME + VOLATILITY BASELINES
@@ -246,9 +256,6 @@ async def scan_all():
                     prev['c'] < prev_day_high
                 )
 
-                reversal_volume = volume_ratio > 1.2
-                reversal_volatility = volatility_ratio > 1.1
-
                 # ===============================
                 # SWEEP STRENGTH SCORE
                 # ===============================
@@ -262,13 +269,10 @@ async def scan_all():
 
                 if wick_ratio > 2:
                     score += 3
-
                 if volume_ratio > 1.3:
                     score += 3
-
                 if volatility_ratio > 1.2:
                     score += 2
-
                 if pdl_sweep or pdh_sweep:
                     score += 2
 
@@ -305,94 +309,95 @@ async def scan_all():
                 )
 
                 # ===============================
+                # HIGH PROBABILITY CONTINUATION
+                # ===============================
+
+                high_prob_continuation = (
+                    impulse_strength == "Strong Expansion"
+                    and behavior == "Expansion"
+                    and volume_state == "Increasing"
+                    and volatility_state == "Expanding"
+                )
+                # ===============================
+                # TRAP DETECTION (SMART MONEY)
+                # ===============================
+
+                bullish_trap = (
+                    pdl_sweep
+                    and funding_rate is not None
+                    and funding_rate < -0.01
+                )
+
+                bearish_trap = (
+                    pdh_sweep
+                    and funding_rate is not None
+                    and funding_rate > 0.01
+                )
+                # ===============================
                 # REVERSAL DETECTION
                 # ===============================
 
                 if pdl_sweep and sweep_strength >= 6:
 
+                    trap_tag = "🐻 SHORT TRAP" if bullish_trap else ""
+
                     alerts.append(
                         f"🔥 {symbol}\n"
-                        f"Potential Bullish Reversal\n"
+                        f"Potential Bullish Reversal {trap_tag}\n"
                         f"Sweep Strength: {sweep_strength}/10\n"
-                        f"Funding Rate: {funding_text}\n"
+                        f"Funding Rate: {funding_text}\n\n"
                         f"Liquidity Grab Below PDL\n"
+                        f"PDH: {prev_day_high}\n"
+                        f"PDL: {prev_day_low}\n\n"
+                        f"{liquidity_bias}\n"
                     )
-                    alerts.append(separator)
 
+                    alerts.append(separator)
+                    continue
+                
                 elif pdh_sweep and sweep_strength >= 6:
 
+                    trap_tag = "🐂 LONG TRAP" if bearish_trap else ""
+
                     alerts.append(
                         f"🔥 {symbol}\n"
-                        f"Potential Bearish Reversal\n"
+                        f"Potential Bearish Reversal {trap_tag}\n"
                         f"Sweep Strength: {sweep_strength}/10\n"
-                        f"Funding Rate: {funding_text}\n"
+                        f"Funding Rate: {funding_text}\n\n"
                         f"Liquidity Grab Above PDH\n"
-                    )
-                    alerts.append(separator)
-
-                # ===============================
-                # ORIGINAL RADAR (UNCHANGED)
-                # ===============================
-
-                if distance_high <= DISTANCE_THRESHOLD:
-
-                    model_bias, action = get_model_action(
-                        structure,
-                        impulse_strength,
-                        behavior,
-                        volume_state,
-                        volatility_state
-                    )
-
-                    alerts.append(
-                        f"{symbol}\n"
-                        f"Price: {current_price}\n"
                         f"PDH: {prev_day_high}\n"
                         f"PDL: {prev_day_low}\n\n"
-                        f"Approaching PDH ({distance_high*100:.2f}%)\n\n"
-                        f"Context:\n"
-                        f"• 15m Structure: {structure}\n"
-                        f"• Impulse: {impulse_strength}\n"
-                        f"• Behavior: {behavior}\n"
-                        f"• Volume: {volume_state}\n"
-                        f"• Volatility: {volatility_state}\n\n"
-                        f"Model Bias:\n"
-                        f"→ {model_bias}\n"
-                        f"Action:\n"
-                        f"{action}\n"
+                        f"{liquidity_bias}\n"
                     )
 
                     alerts.append(separator)
+                    continue
 
-                elif distance_low <= DISTANCE_THRESHOLD:
+                # ===============================
+                # CONTINUATION ALERT
+                # ===============================
 
-                    model_bias, action = get_model_action(
-                        structure,
-                        impulse_strength,
-                        behavior,
-                        volume_state,
-                        volatility_state
-                    )
+                if high_prob_continuation:
+
+                    direction = "Bullish Continuation" if structure == "Bullish" else "Bearish Continuation"
 
                     alerts.append(
-                        f"{symbol}\n"
+                        f"🚀 {symbol}\n"
+                        f"High Probability {direction}\n\n"
                         f"Price: {current_price}\n"
-                        f"PDH: {prev_day_high}\n"
-                        f"PDL: {prev_day_low}\n\n"
-                        f"Approaching PDL ({distance_low*100:.2f}%)\n\n"
+                        f"Funding Rate: {funding_text}\n\n"
                         f"Context:\n"
-                        f"• 15m Structure: {structure}\n"
+                        f"• Structure: {structure}\n"
                         f"• Impulse: {impulse_strength}\n"
-                        f"• Behavior: {behavior}\n"
                         f"• Volume: {volume_state}\n"
                         f"• Volatility: {volatility_state}\n\n"
-                        f"Model Bias:\n"
-                        f"→ {model_bias}\n"
-                        f"Action:\n"
-                        f"{action}\n"
+                        f"PDH: {prev_day_high}\n"
+                        f"PDL: {prev_day_low}\n\n"
+                        f"{liquidity_bias}\n"
                     )
 
                     alerts.append(separator)
+                    continue
 
             except:
                 continue
@@ -422,7 +427,7 @@ async def scan_all():
 
         else:
 
-            print("No liquidity proximity detected.")
+            print("No high probability setups detected.")
 
     except Exception as e:
 

@@ -1,0 +1,27 @@
+name: Run Crypto Scanner
+
+on:
+  schedule:
+    - cron: '0 0 * * *'   # runs once per day
+  workflow_dispatch:
+
+jobs:
+  run-scanner:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14.2"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Run scanner for 6 hours
+        run: |
+          timeout 21600 python local_scanner_v2.py
