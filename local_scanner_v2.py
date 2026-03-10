@@ -578,8 +578,6 @@ async def scan_all():
                     impulse_strength == "Strong Expansion"
                     and behavior == "Expansion"
                     and volume_state == "Increasing"
-                    and volatility_state == "Expanding"
-                    and recent_liquidity_event
                     and (
                         (near_pdh and bullish_break) or
                         (near_pdl and bearish_break)
