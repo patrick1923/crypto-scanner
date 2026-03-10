@@ -569,6 +569,7 @@ async def scan_all():
 
                 bullish_break = prev_close > prev_day_high * 1.001
                 bearish_break = prev_close < prev_day_low * 0.999
+                recent_liquidity_event = pdl_sweep or pdh_sweep
                 
                 # ===============================
                 # CONTINUATION PROBABILITY
@@ -640,7 +641,7 @@ async def scan_all():
 
                 reversal_volume = volume_ratio > 1.2
                 reversal_volatility = volatility_ratio > 1.1
-                recent_liquidity_event = pdl_sweep or pdh_sweep
+                
 
                 # ===============================
                 # SWEEP STRENGTH SCORE
@@ -664,9 +665,11 @@ async def scan_all():
                 # ===============================
                 # REVERSAL DETECTION
                 # ===============================
+
                 if pdl_sweep and sweep_strength >= 6:
 
-                    
+                    trade_info = await execute_trade(symbol, "long", current_price)
+
                     square_symbol = format_square_symbol(symbol)
 
                     alerts.append(
@@ -682,12 +685,15 @@ async def scan_all():
                         f"{trade_info}"
                     )
 
-                    trade_info = await execute_trade(symbol, "long", current_price)
-
                     alerts.append(separator)
                     continue
 
+
                 elif pdh_sweep and sweep_strength >= 6:
+
+                    trade_info = await execute_trade(symbol, "short", current_price)
+
+                    square_symbol = format_square_symbol(symbol)
 
                     alerts.append(
                         f"🔥 {square_symbol}\n"
@@ -697,16 +703,13 @@ async def scan_all():
                         f"Potential Bearish Reversal\n"
                         f"Sweep Strength: {sweep_strength}/10\n"
                         f"Funding Rate: {funding_text}\n"
-                        f"Liquidity Grab Below PDL\n"
+                        f"Liquidity Grab Above PDH\n"
                         f"{liquidity_bias}\n"
                         f"{trade_info}"
                     )
 
-                    trade_info = await execute_trade(symbol, "short", current_price)
-
                     alerts.append(separator)
                     continue
-
                 # ===============================
                 # ORIGINAL RADAR / PROXIMITY ALERT
                 # ===============================
