@@ -319,7 +319,7 @@ def wait_until_next_5min():
     except Exception as e:
         usdt_balance = "Error fetching balance"
 
-    print(f"Next scan aligned in {int(wait_seconds)} seconds | Futures Balance: {usdt_balance} USDT")
+    print(f"Next scan aligned in {int(wait_seconds)} seconds | Futures Balance: {usdt_balance: .2f} USDT")
 
     time.sleep(wait_seconds)
 
@@ -406,6 +406,8 @@ def manage_breakeven(symbol):
 
     except Exception as e:
         print("Breakeven manager error:", e)
+
+
 # ============================================================
 # MAIN SCAN
 # ============================================================
@@ -571,34 +573,26 @@ async def scan_all():
                 bearish_break = prev_close < prev_day_low * 0.999
                 recent_liquidity_event = pdl_sweep or pdh_sweep
                 
-                # ===============================
-                # CONTINUATION PROBABILITY
-                # ===============================
+                # =======================
+                # CONTINUATION TRADE
+                # =======================
                 high_prob_continuation = (
-                    impulse_strength == "Strong Expansion"
-                    and behavior == "Expansion"
+                    behavior == "Expansion"
                     and volume_state == "Increasing"
-                    and (
-                        (near_pdh and bullish_break) or
-                        (near_pdl and bearish_break)
-                    )
+                    and ((near_pdh and bullish_break) or (near_pdl and bearish_break))
                 )
                 continuation_emoji = "🚀" if high_prob_continuation else ""
-
                 # AUTO TRADE CONTINUATION
 
-                if high_prob_continuation:
-
-                    # Bullish continuation above PDH
-                    if near_pdh and bullish_break and structure == "Bullish":
-                        trade_info = await execute_trade(symbol, "long", current_price)
-
-                    # Bearish continuation below PDL
-                    elif near_pdl and bearish_break and structure == "Bearish":
-                        trade_info = await execute_trade(symbol, "short", current_price)
-
-                    if not (near_pdh or near_pdl):
-                        continue
+                # =======================
+                # CONTINUATION TRADE
+                # =======================
+                high_prob_continuation = (
+                    behavior == "Expansion"
+                    and volume_state == "Increasing"
+                    and ((near_pdh and bullish_break) or (near_pdl and bearish_break))
+                )
+                continuation_emoji = "🚀" if high_prob_continuation else ""
 
                 # ===============================
                 # LIQUIDITY BREAK PRESSURE
@@ -664,48 +658,35 @@ async def scan_all():
                 # REVERSAL DETECTION
                 # ===============================
 
+                square_symbol = format_square_symbol(symbol)
                 if pdl_sweep and sweep_strength >= 6:
-
                     trade_info = await execute_trade(symbol, "long", current_price)
-
-                    square_symbol = format_square_symbol(symbol)
-
                     alerts.append(
                         f"🔥 {square_symbol}\n"
-                        f"Price: {current_price}\n"
-                        f"PDH: {prev_day_high}\n"
-                        f"PDL: {prev_day_low}\n\n"
+                        f"Price: {current_price:.2f}\n"
+                        f"PDH: {prev_day_high:.2f}\n"
+                        f"PDL: {prev_day_low:.2f}\n\n"
                         f"Potential Bullish Reversal\n"
                         f"Sweep Strength: {sweep_strength}/10\n"
-                        f"Funding Rate: {funding_text}\n"
-                        f"Liquidity Grab Below PDL\n"
-                        f"{liquidity_bias}\n"
+                        f"Funding Rate: {funding_rate}\n"
                         f"{trade_info}"
                     )
-
                     alerts.append(separator)
                     continue
 
 
                 elif pdh_sweep and sweep_strength >= 6:
-
                     trade_info = await execute_trade(symbol, "short", current_price)
-
-                    square_symbol = format_square_symbol(symbol)
-
                     alerts.append(
                         f"🔥 {square_symbol}\n"
-                        f"Price: {current_price}\n"
-                        f"PDH: {prev_day_high}\n"
-                        f"PDL: {prev_day_low}\n\n"
+                        f"Price: {current_price:.2f}\n"
+                        f"PDH: {prev_day_high:.2f}\n"
+                        f"PDL: {prev_day_low:.2f}\n\n"
                         f"Potential Bearish Reversal\n"
                         f"Sweep Strength: {sweep_strength}/10\n"
-                        f"Funding Rate: {funding_text}\n"
-                        f"Liquidity Grab Above PDH\n"
-                        f"{liquidity_bias}\n"
+                        f"Funding Rate: {funding_rate}\n"
                         f"{trade_info}"
                     )
-
                     alerts.append(separator)
                     continue
                 # ===============================
@@ -718,9 +699,9 @@ async def scan_all():
 
                     alerts.append(
                         f"{continuation_emoji}{pressure_emoji} {square_symbol}\n"
-                        f"Price: {current_price}\n"
-                        f"PDH: {prev_day_high}\n"
-                        f"PDL: {prev_day_low}\n\n"
+                        f"Price: {current_price: .2f}\n"
+                        f"PDH: {prev_day_high: .2f}\n"
+                        f"PDL: {prev_day_low: .2f}\n\n"
                         f"Approaching PDH ({distance_high*100:.2f}%)\n\n"
                         f"Context:\n"
                         f"• 15m Structure: {structure}\n"
@@ -739,9 +720,9 @@ async def scan_all():
 
                     alerts.append(
                         f"{continuation_emoji}{pressure_emoji} {square_symbol}\n"
-                        f"Price: {current_price}\n"
-                        f"PDH: {prev_day_high}\n"
-                        f"PDL: {prev_day_low}\n\n"
+                        f"Price: {current_price: .2f}\n"
+                        f"PDH: {prev_day_high: .2f}\n"
+                        f"PDL: {prev_day_low: .2f}\n\n"
                         f"Approaching PDH ({distance_high*100:.2f}%)\n\n"
                         f"Context:\n"
                         f"• 15m Structure: {structure}\n"
@@ -756,22 +737,14 @@ async def scan_all():
             except:
                 continue
 
-        # ===============================
         # TELEGRAM SEND
-        # ===============================
+        # =======================
         if alerts:
             countdown = get_daily_countdown()
-            message = (
-                f"⚠️ <b>RADAR</b>\n\n"
-                f"Daily Candle Close In: {countdown}\n\n"
-            )
-
+            message = f"⚠️ <b>RADAR</b>\n\nDaily Candle Close In: {countdown}\n\n"
             for alert in alerts:
                 message += alert + "\n"
-
-            message += separator
-            message += donation_message
-
+            message += separator + donation_message
             send_telegram_message(message)
             print("Liquidity alerts sent.")
         else:
@@ -781,7 +754,6 @@ async def scan_all():
         print(f"Scan error: {e}")
 
     finally:
-        pass
         print("Exchange session closed cleanly.")
 # ============================================================
 # LOOP
