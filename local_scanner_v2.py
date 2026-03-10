@@ -414,12 +414,11 @@ def manage_breakeven(symbol):
 
 async def scan_all():
 
-    
     exchange = ccxt.binance({'options': {'defaultType': 'future'}})
 
     try:
-        exchange.load_markets()
 
+        exchange.load_markets()
         print("🔄 Starting Liquidity Radar Scan.")
 
         separator = "\n━━━━━━━━━━━━━━━━━━━━\n"
@@ -478,10 +477,7 @@ async def scan_all():
                 except:
                     funding_rate = None
 
-                if funding_rate is not None:
-                    funding_text = f"{funding_rate * 100:.4f}%"
-                else:
-                    funding_text = "N/A"
+                funding_text = f"{funding_rate * 100:.4f}%" if funding_rate else "N/A"
 
                 prev_day_high = daily_levels[symbol]['high']
                 prev_day_low = daily_levels[symbol]['low']
@@ -489,9 +485,6 @@ async def scan_all():
                 distance_high = abs(current_price - prev_day_high) / prev_day_high
                 distance_low = abs(current_price - prev_day_low) / prev_day_low
 
-                # ===============================
-                # FETCH 15m DATA
-                # ===============================
                 ohlcv = exchange.fetch_ohlcv(symbol, '15m', limit=21)
                 if not ohlcv or len(ohlcv) < 21:
                     continue
@@ -499,21 +492,6 @@ async def scan_all():
                 df = pd.DataFrame(ohlcv, columns=['ts','o','h','l','c','v'])
                 last = df.iloc[-1]
                 prev = df.iloc[-2]
-
-                # ===============================
-                # LIQUIDITY STACK ANALYSIS
-                # ===============================
-                lookback = 10
-                candles = df.iloc[-lookback:]
-                above_pdh = sum(c['h'] > prev_day_high for _, c in candles.iterrows())
-                below_pdl = sum(c['l'] < prev_day_low for _, c in candles.iterrows())
-
-                if above_pdh > below_pdl and above_pdh >= 3:
-                    liquidity_bias = "Liquidity Stacked Above PDH 🔼"
-                elif below_pdl > above_pdh and below_pdl >= 3:
-                    liquidity_bias = "Liquidity Stacked Below PDL 🔽"
-                else:
-                    liquidity_bias = "Balanced Liquidity ⚖️"
 
                 # ===============================
                 # VOLUME + VOLATILITY BASELINES
@@ -533,164 +511,130 @@ async def scan_all():
                 structure = "Bullish" if df['c'].iloc[-1] > df['c'].iloc[-5] else "Bearish"
 
                 impulse_strength = (
-                    "Strong Expansion" if volatility_ratio > 1.5
-                    else "Moderate" if volatility_ratio > 1.0
+                    "Strong Expansion" if volatility_ratio > 1.3
+                    else "Moderate" if volatility_ratio > 0.9
                     else "Weak"
                 )
 
                 behavior = (
-                    "Compression" if volatility_ratio < 0.8
-                    else "Expansion" if volatility_ratio > 1.2
+                    "Compression" if volatility_ratio < 0.9
+                    else "Expansion" if volatility_ratio > 1.1
                     else "Normal"
                 )
 
                 volume_state = (
-                    "Increasing" if volume_ratio > 1.2
+                    "Increasing" if volume_ratio > 1.0
                     else "Decreasing" if volume_ratio < 0.8
                     else "Stable"
                 )
 
                 volatility_state = (
-                    "Expanding" if volatility_ratio > 1.2
-                    else "Contracting" if volatility_ratio < 0.8
+                    "Expanding" if volatility_ratio > 1.1
+                    else "Contracting" if volatility_ratio < 0.9
                     else "Stable"
                 )
-                # Distance from PDH / PDL
-                distance_from_pdh = abs(current_price - prev_day_high) / prev_day_high
-                distance_from_pdl = abs(current_price - prev_day_low) / prev_day_low
-
-                near_pdh = distance_from_pdh < 0.002
-                near_pdl = distance_from_pdl < 0.002
 
                 # ===============================
-                # Breakout confirmation
-                # Require candle CLOSE outside PDH/PDL
+                # LIQUIDITY STACK ANALYSIS
                 # ===============================
+                lookback = 10
+                candles = df.iloc[-lookback:]
+                above_pdh = sum(c['h'] > prev_day_high for _, c in candles.iterrows())
+                below_pdl = sum(c['l'] < prev_day_low for _, c in candles.iterrows())
 
-                prev_close = prev['c']
-
-                bullish_break = prev_close > prev_day_high * 1.001
-                bearish_break = prev_close < prev_day_low * 0.999
-                recent_liquidity_event = pdl_sweep or pdh_sweep
-                
-                # =======================
-                # CONTINUATION TRADE
-                # =======================
-                high_prob_continuation = (
-                    behavior == "Expansion"
-                    and volume_state == "Increasing"
-                    and ((near_pdh and bullish_break) or (near_pdl and bearish_break))
-                )
-                continuation_emoji = "🚀" if high_prob_continuation else ""
-                # AUTO TRADE CONTINUATION
-
-                # =======================
-                # CONTINUATION TRADE
-                # =======================
-                high_prob_continuation = (
-                    behavior == "Expansion"
-                    and volume_state == "Increasing"
-                    and ((near_pdh and bullish_break) or (near_pdl and bearish_break))
-                )
-                continuation_emoji = "🚀" if high_prob_continuation else ""
-
-                # ===============================
-                # LIQUIDITY BREAK PRESSURE
-                # ===============================
-                bullish_break_pressure = (
-                    structure == "Bullish"
-                    and volume_ratio > 1.2
-                    and volatility_ratio > 1.2
-                    and behavior == "Expansion"
-                )
-
-                bearish_break_pressure = (
-                    structure == "Bearish"
-                    and volume_ratio > 1.2
-                    and volatility_ratio > 1.2
-                    and behavior == "Expansion"
-                )
-
-                if bullish_break_pressure:
-                    pressure_emoji = "🧨⬆️"
-                elif bearish_break_pressure:
-                    pressure_emoji = "🧨⬇️"
+                if above_pdh > below_pdl and above_pdh >= 3:
+                    liquidity_bias = "Liquidity Stacked Above PDH 🔼"
+                elif below_pdl > above_pdh and below_pdl >= 3:
+                    liquidity_bias = "Liquidity Stacked Below PDL 🔽"
                 else:
-                    pressure_emoji = ""
+                    liquidity_bias = "Balanced Liquidity ⚖️"
 
                 # ===============================
                 # LIQUIDITY SWEEP DETECTION
                 # ===============================
-                pdl_sweep = (
-                    prev['l'] < prev_day_low and
-                    prev['c'] > prev_day_low
-                )
-
-                pdh_sweep = (
-                    prev['h'] > prev_day_high and
-                    prev['c'] < prev_day_high
-                )
-
-                reversal_volume = volume_ratio > 1.2
-                reversal_volatility = volatility_ratio > 1.1
-                
+                pdl_sweep = prev['l'] < prev_day_low and prev['c'] > prev_day_low
+                pdh_sweep = prev['h'] > prev_day_high and prev['c'] < prev_day_high
 
                 # ===============================
-                # SWEEP STRENGTH SCORE
+                # SWEEP STRENGTH
                 # ===============================
                 wick_size = abs(prev['h'] - prev['l'])
                 body_size = abs(prev['c'] - prev['o'])
                 wick_ratio = wick_size / body_size if body_size > 0 else 0
 
                 score = 0
-                if wick_ratio > 2:
-                    score += 3
-                if volume_ratio > 1.3:
-                    score += 3
-                if volatility_ratio > 1.2:
-                    score += 2
-                if pdl_sweep or pdh_sweep:
-                    score += 2
+                if wick_ratio > 2: score += 3
+                if volume_ratio > 1.3: score += 3
+                if volatility_ratio > 1.2: score += 2
+                if pdl_sweep or pdh_sweep: score += 2
 
                 sweep_strength = min(score, 10)
 
                 # ===============================
-                # REVERSAL DETECTION
+                # REVERSAL SIGNAL
                 # ===============================
-
                 square_symbol = format_square_symbol(symbol)
-                if pdl_sweep and sweep_strength >= 6:
-                    trade_info = await execute_trade(symbol, "long", current_price)
+
+                if pdl_sweep and sweep_strength >= 5:
+
+                    if sweep_strength >= 7:
+                        trade_info = await execute_trade(symbol, "long", current_price)
+                    else:
+                        trade_info = ""
+
                     alerts.append(
                         f"🔥 {square_symbol}\n"
-                        f"Price: {current_price:.2f}\n"
-                        f"PDH: {prev_day_high:.2f}\n"
-                        f"PDL: {prev_day_low:.2f}\n\n"
+                        f"Price: {current_price}\n"
+                        f"PDH: {prev_day_high}\n"
+                        f"PDL: {prev_day_low}\n\n"
                         f"Potential Bullish Reversal\n"
                         f"Sweep Strength: {sweep_strength}/10\n"
-                        f"Funding Rate: {funding_rate}\n"
-                        f"{trade_info}"
+                        f"Funding Rate: {funding_text}\n"
+                        f"{trade_info}\n"
+                        f"{liquidity_bias}\n"
                     )
                     alerts.append(separator)
                     continue
 
+                elif pdh_sweep and sweep_strength >= 5:
 
-                elif pdh_sweep and sweep_strength >= 6:
-                    trade_info = await execute_trade(symbol, "short", current_price)
+                    if sweep_strength >= 7:
+                        trade_info = await execute_trade(symbol, "short", current_price)
+
                     alerts.append(
                         f"🔥 {square_symbol}\n"
-                        f"Price: {current_price:.2f}\n"
-                        f"PDH: {prev_day_high:.2f}\n"
-                        f"PDL: {prev_day_low:.2f}\n\n"
+                        f"Price: {current_price}\n"
+                        f"PDH: {prev_day_high}\n"
+                        f"PDL: {prev_day_low}\n\n"
                         f"Potential Bearish Reversal\n"
                         f"Sweep Strength: {sweep_strength}/10\n"
-                        f"Funding Rate: {funding_rate}\n"
-                        f"{trade_info}"
+                        f"Funding Rate: {funding_text}\n"
+                        f"{trade_info}\n"
+                        f"{liquidity_bias}\n"
                     )
                     alerts.append(separator)
                     continue
+
                 # ===============================
-                # ORIGINAL RADAR / PROXIMITY ALERT
+                # CONTINUATION DETECTION
+                # ===============================
+                prev_close = prev['c']
+                bullish_break = prev_close > prev_day_high * 1.001
+                bearish_break = prev_close < prev_day_low * 0.999
+
+                near_pdh = distance_high < DISTANCE_THRESHOLD
+                near_pdl = distance_low < DISTANCE_THRESHOLD
+
+                high_prob_continuation = (
+                    behavior == "Expansion"
+                    and volume_state == "Increasing"
+                    and ((near_pdh and bullish_break) or (near_pdl and bearish_break))
+                )
+
+                continuation_emoji = "🚀" if high_prob_continuation else ""
+
+                # ===============================
+                # RADAR ALERTS
                 # ===============================
                 if distance_high <= DISTANCE_THRESHOLD:
                     model_bias, action = get_model_action(
@@ -698,18 +642,20 @@ async def scan_all():
                     )
 
                     alerts.append(
-                        f"{continuation_emoji}{pressure_emoji} {square_symbol}\n"
-                        f"Price: {current_price: .2f}\n"
-                        f"PDH: {prev_day_high: .2f}\n"
-                        f"PDL: {prev_day_low: .2f}\n\n"
+                        f"{continuation_emoji} {square_symbol}\n"
+                        f"Price: {current_price}\n"
+                        f"PDH: {prev_day_high}\n"
+                        f"PDL: {prev_day_low}\n\n"
                         f"Approaching PDH ({distance_high*100:.2f}%)\n\n"
                         f"Context:\n"
                         f"• 15m Structure: {structure}\n"
                         f"• Impulse: {impulse_strength}\n"
                         f"• Behavior: {behavior}\n"
                         f"• Volume: {volume_state}\n"
-                        f"• Volatility: {volatility_state}\n\n"
-                        f"{trade_info if 'trade_info' in locals() else ''}"
+                        f"• Volatility: {volatility_state}\n"
+                        f"Model Bias:\n→ {model_bias}\n"
+                        f"Action:\n{action}\n"
+                        f"{liquidity_bias}\n"
                     )
                     alerts.append(separator)
 
@@ -719,34 +665,40 @@ async def scan_all():
                     )
 
                     alerts.append(
-                        f"{continuation_emoji}{pressure_emoji} {square_symbol}\n"
-                        f"Price: {current_price: .2f}\n"
-                        f"PDH: {prev_day_high: .2f}\n"
-                        f"PDL: {prev_day_low: .2f}\n\n"
-                        f"Approaching PDH ({distance_high*100:.2f}%)\n\n"
+                        f"{continuation_emoji} {square_symbol}\n"
+                        f"Price: {current_price}\n"
+                        f"PDH: {prev_day_high}\n"
+                        f"PDL: {prev_day_low}\n\n"
+                        f"Approaching PDL ({distance_low*100:.2f}%)\n\n"
                         f"Context:\n"
                         f"• 15m Structure: {structure}\n"
                         f"• Impulse: {impulse_strength}\n"
                         f"• Behavior: {behavior}\n"
                         f"• Volume: {volume_state}\n"
-                        f"• Volatility: {volatility_state}\n\n"
-                        f"{trade_info if 'trade_info' in locals() else ''}"
+                        f"• Volatility: {volatility_state}\n"
+                        f"Model Bias:\n→ {model_bias}\n"
+                        f"Action:\n{action}\n"
+                        f"{liquidity_bias}\n"
                     )
                     alerts.append(separator)
 
-            except:
+            except Exception as e:
+                print(symbol, "scan error:", e)
                 continue
 
         # TELEGRAM SEND
-        # =======================
         if alerts:
             countdown = get_daily_countdown()
             message = f"⚠️ <b>RADAR</b>\n\nDaily Candle Close In: {countdown}\n\n"
+
             for alert in alerts:
                 message += alert + "\n"
+
             message += separator + donation_message
+
             send_telegram_message(message)
             print("Liquidity alerts sent.")
+
         else:
             print("No liquidity proximity detected.")
 
