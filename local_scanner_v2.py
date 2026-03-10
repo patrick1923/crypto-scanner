@@ -319,7 +319,7 @@ def wait_until_next_5min():
     except Exception as e:
         usdt_balance = "Error fetching balance"
 
-    print(f"Next scan aligned in {int(wait_seconds)} seconds | Futures Balance: {usdt_balance: .2f} USDT")
+    print(f"Next scan aligned in {int(wait_seconds)} seconds | Futures Balance: {usdt_balance} USDT")
 
     time.sleep(wait_seconds)
 
@@ -406,6 +406,9 @@ def manage_breakeven(symbol):
 
     except Exception as e:
         print("Breakeven manager error:", e)
+
+MAX_CONTINUATION_DISTANCE = 0.003   # 0.3% from PDH/PDL
+BREAK_VALID_CANDLES = 3             # breakout must be recent
 
 
 # ============================================================
@@ -569,6 +572,32 @@ async def scan_all():
                 if pdl_sweep or pdh_sweep: score += 2
 
                 sweep_strength = min(score, 10)
+                # ===============================
+                # BREAKOUT STRENGTH MODEL
+                # ===============================
+
+                break_score = 0
+
+                # volume momentum
+                if volume_ratio > 1.4:
+                    break_score += 3
+
+                # volatility expansion
+                if volatility_ratio > 1.3:
+                    break_score += 3
+
+                # strong close beyond liquidity
+                if prev['c'] > prev_day_high * 1.002 or prev['c'] < prev_day_low * 0.998:
+                    break_score += 2
+
+                # follow through momentum
+                if abs(last['c'] - prev['c']) > avg_range * 0.6:
+                    break_score += 2
+
+                break_strength = min(break_score, 10)
+
+                bullish_breakout = prev['c'] > prev_day_high * 1.001
+                bearish_breakout = prev['c'] < prev_day_low * 0.999
 
                 # ===============================
                 # REVERSAL SIGNAL
@@ -616,22 +645,104 @@ async def scan_all():
                     continue
 
                 # ===============================
-                # CONTINUATION DETECTION
+                # CONTINUATION DETECTION (UPGRADED)
                 # ===============================
+
                 prev_close = prev['c']
+
                 bullish_break = prev_close > prev_day_high * 1.001
                 bearish_break = prev_close < prev_day_low * 0.999
 
-                near_pdh = distance_high < DISTANCE_THRESHOLD
-                near_pdl = distance_low < DISTANCE_THRESHOLD
+                # Distance protection
+                distance_from_pdh = abs(current_price - prev_day_high) / prev_day_high
+                distance_from_pdl = abs(current_price - prev_day_low) / prev_day_low
 
-                high_prob_continuation = (
-                    behavior == "Expansion"
-                    and volume_state == "Increasing"
-                    and ((near_pdh and bullish_break) or (near_pdl and bearish_break))
+                near_break_long = distance_from_pdh <= MAX_CONTINUATION_DISTANCE
+                near_break_short = distance_from_pdl <= MAX_CONTINUATION_DISTANCE
+
+
+                # Pullback detection (price revisits level)
+                pullback_long = (
+                    last['l'] <= prev_day_high * 1.002 and
+                    last['c'] > prev_day_high
                 )
 
-                continuation_emoji = "🚀" if high_prob_continuation else ""
+                pullback_short = (
+                    last['h'] >= prev_day_low * 0.998 and
+                    last['c'] < prev_day_low
+                )
+
+
+                # Momentum confirmation
+                momentum_confirm = (
+                    volume_ratio > 1.2
+                    and volatility_ratio > 1.1
+                )
+
+
+                # Break freshness check (avoid late chasing)
+                recent_break = (
+                    bullish_break or bearish_break
+                )
+
+
+                # ===============================
+                # CONTINUATION TRADE EXECUTION
+                # ===============================
+
+                if (
+                    bullish_break
+                    and near_break_long
+                    and pullback_long
+                    and momentum_confirm
+                    and break_strength >= 6
+                ):
+
+                    trade_info = await execute_trade(symbol, "long", current_price)
+
+                    alerts.append(
+                        f"🚀 {square_symbol}\n"
+                        f"Price: {current_price}\n"
+                        f"PDH: {prev_day_high}\n"
+                        f"PDL: {prev_day_low}\n\n"
+                        f"Bullish Break → Pullback → Reclaim\n"
+                        f"Break Strength: {break_strength}/10\n"
+                        f"Distance From PDH: {distance_from_pdh*100:.2f}%\n"
+                        f"Funding Rate: {funding_text}\n"
+                        f"{trade_info}\n"
+                        f"{liquidity_bias}\n"
+                    )
+
+                    alerts.append(separator)
+                    continue
+
+
+                elif (
+                    bearish_break
+                    and near_break_short
+                    and pullback_short
+                    and momentum_confirm
+                    and break_strength >= 6
+                ):
+
+                    trade_info = await execute_trade(symbol, "short", current_price)
+
+                    alerts.append(
+                        f"🚀 {square_symbol}\n"
+                        f"Price: {current_price}\n"
+                        f"PDH: {prev_day_high}\n"
+                        f"PDL: {prev_day_low}\n\n"
+                        f"Bearish Break → Pullback → Reclaim\n"
+                        f"Break Strength: {break_strength}/10\n"
+                        f"Distance From PDL: {distance_from_pdl*100:.2f}%\n"
+                        f"Funding Rate: {funding_text}\n"
+                        f"{trade_info}\n"
+                        f"{liquidity_bias}\n"
+                    )
+
+                    alerts.append(separator)
+                    continue
+                
 
                 # ===============================
                 # RADAR ALERTS
@@ -642,7 +753,7 @@ async def scan_all():
                     )
 
                     alerts.append(
-                        f"{continuation_emoji} {square_symbol}\n"
+                        f"🚀 {square_symbol}\n"
                         f"Price: {current_price}\n"
                         f"PDH: {prev_day_high}\n"
                         f"PDL: {prev_day_low}\n\n"
@@ -665,7 +776,7 @@ async def scan_all():
                     )
 
                     alerts.append(
-                        f"{continuation_emoji} {square_symbol}\n"
+                        f"🚀{square_symbol}\n"
                         f"Price: {current_price}\n"
                         f"PDH: {prev_day_high}\n"
                         f"PDL: {prev_day_low}\n\n"
