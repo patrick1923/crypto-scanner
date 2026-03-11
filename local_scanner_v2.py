@@ -766,12 +766,7 @@ if __name__ == "__main__":
 
     print("=== Liquidity Radar Started ===")
 
+    print("\n🔄 Running scheduled scan...\n")
+    print(f"\nSCAN TIME UTC: {datetime.utcnow().strftime('%H:%M:%S')}")
 
-    while True:
-
-        wait_until_next_5min()
-
-        print("\n🔄 Running synchronized scan...\n")
-        print(f"\nSCAN TIME UTC: {datetime.utcnow().strftime('%H:%M:%S')}")
-
-        run_scan()
+    run_scan()
