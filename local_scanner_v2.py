@@ -204,7 +204,7 @@ async def scan_all():
             reverse=True
         )
 
-        symbols = [s[0] for s in sorted_symbols[:50]]
+        symbols = [s[0] for s in sorted_symbols[:25]]
 
         print(f"Selected Top {len(symbols)} ultra-liquid pairs.")
 
