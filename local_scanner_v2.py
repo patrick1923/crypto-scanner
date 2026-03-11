@@ -4,7 +4,7 @@ if sys.platform == 'win32':
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 import pandas as pd
-import ccxt
+import ccxt.pro as ccxt_pro
 import time
 from datetime import datetime, timedelta
 import pytz
@@ -14,10 +14,40 @@ from database import log_liquidity_context
 from dotenv import load_dotenv
 load_dotenv()
 
-# ================= TELEGRAM =================
-BINANCE_API_KEY = os.getenv("BINANCE_API_KEY")
-BINANCE_SECRET = os.getenv("BINANCE_SECRET")
 
+BINANCE_SQUARE_KEY = os.getenv("BINANCE_SQUARE_KEY")  # use env variable
+
+def send_binance_square(text: str):
+    """
+    Sends a plain text post to Binance Square using the Square Skill API.
+    """
+    url = "https://www.binance.com/bapi/composite/v1/public/pgc/openApi/content/add"
+    
+    headers = {
+        "X-Square-OpenAPI-Key": BINANCE_SQUARE_KEY,
+        "Content-Type": "application/json",
+        "clienttype": "binanceSkill"
+    }
+    
+    payload = {
+        "bodyTextOnly": text
+    }
+
+    try:
+        response = requests.post(url, json=payload, headers=headers, timeout=10)
+        result = response.json()
+        
+        if response.status_code == 200 and result.get("success"):
+            post_id = result.get("data", {}).get("id")
+            print(f"Posted to Square! Link: https://www.binance.com/square/post/{post_id}")
+        else:
+            print(f"Binance Square post failed: {result.get('message', 'Unknown error')}")
+            
+    except Exception as e:
+        print(f"Error connecting to Binance Square: {e}")
+
+# ================= TELEGRAM =================
+scanner_memory = {}
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
@@ -33,195 +63,11 @@ def send_telegram_message(text: str):
     except:
         print("Telegram send failed.")
 
-def format_square_symbol(symbol):
-
-    base = symbol.split('/')[0]   # BTC/USDT:USDT → BTC
-    return f"${base}"
-
 # ================= CONFIG =================
-DISTANCE_THRESHOLD = 0.002
-TRADE_RISK = 0.05
-ACTIVE_TRADES = set()
-BREAKEVEN_MOVED = set()
+
 KSA_TIMEZONE = pytz.timezone('Asia/Riyadh')
+DISTANCE_THRESHOLD = 0.002  # 0.2%
 
-# ============================================================
-# BINANCE TRADING CLIENT
-# ============================================================
-
-trade_exchange = ccxt.binance({
-    "apiKey": BINANCE_API_KEY,
-    "secret": BINANCE_SECRET,
-    "options": {"defaultType": "future"}
-})
-
-# ============================================================
-# HELPER FUNCTIONS
-# ============================================================
-
-def get_position(symbol):
-
-    try:
-        positions = trade_exchange.fetch_positions([symbol])
-
-        for p in positions:
-
-            contracts = float(p.get("contracts", 0))
-
-            if contracts != 0:
-                return p
-
-        return None
-
-    except Exception as e:
-        print("Position check failed:", e)
-        return None
-
-async def execute_trade(symbol, side, price):
-
-    try:
-
-        # 1️⃣ Prevent duplicate trades in this bot session
-        if symbol in ACTIVE_TRADES:
-            print(f"Skipping {symbol} — already traded in this session")
-            return
-
-        # 2️⃣ Check Binance if position already exists
-        existing = get_position(symbol)
-
-        if existing:
-            print(f"Skipping {symbol} — position already open")
-            return
-
-        balance = trade_exchange.fetch_balance()
-        usdt_balance = balance['USDT']['free']
-
-        trade_size = usdt_balance * TRADE_RISK
-
-        
-        # ===============================
-        # DETECT LEVERAGE FROM BINANCE
-        # ===============================
-
-        # Read leverage only (do NOT modify Binance setting)
-        leverage = 1
-
-        try:
-            positions = trade_exchange.fetch_positions([symbol])
-            if positions:
-                leverage = float(positions[0].get("leverage", 1))
-        except:
-            pass
-            
-
-        # ===============================
-        # TRUE 5% RISK CALCULATION
-        # ===============================
-
-        risk_capital = usdt_balance * TRADE_RISK
-
-        # stop distance (same as your SL logic)
-        if side == "long":
-            stop_price = price * 0.985
-        else:
-            stop_price = price * 1.015
-
-        stop_distance = abs(price - stop_price)
-
-        # position value required to risk exactly 5%
-        position_value = (risk_capital * price) / stop_distance
-
-
-        # Apply precision
-        market = trade_exchange.market(symbol)
-        # convert to contracts
-        amount = position_value / price
-        amount = adjust_amount(symbol, amount, price)
-
-        print(f"{symbol} | Balance: {usdt_balance:.2f} | Risk: {risk_capital:.2f} | Leverage: {leverage}x | Amount: {amount}")
-
-        # 3️⃣ Prevent invalid order size
-        if amount <= 0:
-            print("Trade amount invalid.")
-            return
-
-        if side == "long":
-
-            order = trade_exchange.create_market_buy_order(symbol, amount)
-
-        else:
-
-            order = trade_exchange.create_market_sell_order(symbol, amount)
-
-        entry = order['average'] if order['average'] else price
-
-        if side == "long":
-
-            sl = entry * 0.985
-            tp = entry * 1.03
-            close_side = "sell"
-
-        else:
-
-            sl = entry * 1.015
-            tp = entry * 0.97
-            close_side = "buy"
-
-        trade_exchange.create_order(
-            symbol,
-            "STOP_MARKET",
-            close_side,
-            amount,
-            None,
-            {"stopPrice": sl}
-        )
-
-        trade_exchange.create_order(
-            symbol,
-            "TAKE_PROFIT_MARKET",
-            close_side,
-            amount,
-            None,
-            {"stopPrice": tp}
-        )
-
-        trade_info = (
-            f"\n\n🚨 TRADE EXECUTED\n"
-            f"Side: {side.upper()}\n"
-            f"Entry: {entry}\n"
-            f"TP: {tp}\n"
-            f"SL: {sl}\n"
-        )
-
-        ACTIVE_TRADES.add(symbol)
-                
-        return trade_info
-
-    except Exception as e:
-        print("Trade execution failed:", e)
-        return ""
-
- #########################################       
-def adjust_amount(symbol, amount, price):
-
-    market = trade_exchange.market(symbol)
-
-    min_qty = market['limits']['amount']['min']
-    min_notional = market['limits']['cost']['min']
-
-    # Apply Binance precision
-    amount = float(trade_exchange.amount_to_precision(symbol, amount))
-
-    # Ensure minimum quantity
-    if min_qty and amount < min_qty:
-        amount = min_qty
-
-    # Ensure minimum notional
-    if min_notional and amount * price < min_notional:
-        amount = min_notional / price
-        amount = float(trade_exchange.amount_to_precision(symbol, amount))
-
-    return amount
 # ============================================================
 # DAILY COUNTDOWN
 # ============================================================
@@ -245,10 +91,8 @@ async def preload_daily_levels(exchange, symbols):
     daily_levels = {}
 
     for symbol in symbols:
-
-
         try:
-            daily = exchange.fetch_ohlcv(symbol, timeframe='1d', limit=2)
+            daily = await exchange.fetch_ohlcv(symbol, timeframe='1d', limit=2)
             if len(daily) < 2:
                 continue
 
@@ -296,7 +140,7 @@ def get_model_action(structure, impulse, behavior, volume, volatility):
             return "Liquidity Building Below", "Wait for expansion before short."
 
         return "Unclear Bearish Condition", "No trade. Wait for cleaner setup."
-    
+
 ################################################
 
 def wait_until_next_5min():
@@ -313,102 +157,10 @@ def wait_until_next_5min():
 
     wait_seconds = (next_time - now).total_seconds()
 
-    try:
-        balance = trade_exchange.fetch_balance()
-        usdt_balance = balance['USDT']['total']
-    except Exception as e:
-        usdt_balance = "Error fetching balance"
-
-    print(f"Next scan aligned in {int(wait_seconds)} seconds | Futures Balance: {usdt_balance} USDT")
+    print(f"Next scan aligned in {int(wait_seconds)} seconds.")
 
     time.sleep(wait_seconds)
 
-
-
-def calculate_roi(entry_price, current_price, side, leverage):
-
-    if side == "long":
-        pnl_pct = (current_price - entry_price) / entry_price
-    else:
-        pnl_pct = (entry_price - current_price) / entry_price
-
-    roi = pnl_pct * leverage * 100
-    return roi
-
-def manage_breakeven(symbol):
-
-    try:
-
-        pos = get_position(symbol)
-
-        if not pos:
-            return
-
-        contracts = float(pos["contracts"])
-
-        if contracts == 0:
-            return
-
-        entry_price = pos.get("entryPrice")
-        side = pos.get("side")
-        leverage = pos.get("leverage")
-
-        if not entry_price or not leverage:
-            return
-
-        entry_price = float(entry_price)
-        leverage = float(leverage)
-
-        ticker = trade_exchange.fetch_ticker(symbol)
-        current_price = ticker["last"]
-
-        roi = calculate_roi(entry_price, current_price, side, leverage)
-
-        if roi >= 100 and symbol not in BREAKEVEN_MOVED:
-
-            print(f"{symbol} hit 100% ROI → moving SL to breakeven")
-
-            # Cancel old stop orders
-            orders = trade_exchange.fetch_open_orders(symbol)
-
-            for o in orders:
-                if o["type"] == "stop_market":
-                    trade_exchange.cancel_order(o["id"], symbol)
-
-            params = {
-                "stopPrice": entry_price,
-                "closePosition": True
-            }
-
-            if side == "long":
-
-                trade_exchange.create_order(
-                    symbol,
-                    "STOP_MARKET",
-                    "sell",
-                    None,
-                    None,
-                    params
-                )
-
-            else:
-
-                trade_exchange.create_order(
-                    symbol,
-                    "STOP_MARKET",
-                    "buy",
-                    None,
-                    None,
-                    params
-                )
-
-            BREAKEVEN_MOVED.add(symbol)
-
-    except Exception as e:
-        print("Breakeven manager error:", e)
-
-MAX_CONTINUATION_DISTANCE = 0.003   # 0.3% from PDH/PDL
-BREAK_VALID_CANDLES = 3             # breakout must be recent
 
 
 # ============================================================
@@ -417,11 +169,13 @@ BREAK_VALID_CANDLES = 3             # breakout must be recent
 
 async def scan_all():
 
-    exchange = ccxt.binance({'options': {'defaultType': 'future'}})
+    exchange = ccxt_pro.binance({'options': {'defaultType': 'future'}})
+    
+
 
     try:
+        await exchange.load_markets()
 
-        exchange.load_markets()
         print("🔄 Starting Liquidity Radar Scan.")
 
         separator = "\n━━━━━━━━━━━━━━━━━━━━\n"
@@ -433,9 +187,9 @@ async def scan_all():
             "0x7070f252c95df9a42a9c4df536b4166927a5e670\n"
         )
 
-        tickers = exchange.fetch_tickers()
+        tickers = await exchange.fetch_tickers()
 
-        EXCLUDED_PAIRS = ["XAU/USDT:USDT", "XAG/USDT:USDT"]
+        EXCLUDED_PAIRS = ["XAU/USDT:USDT", "XAG/USDT:USDT","TSLA/USDT:USDT"]
 
         usdt_futures = {
             symbol: data for symbol, data in tickers.items()
@@ -460,22 +214,17 @@ async def scan_all():
 
         for symbol in symbols:
 
-            trade_info = ""
-
             if symbol not in daily_levels:
                 continue
 
             try:
 
-                # ===============================
-                # FETCH TICKER & FUNDING
-                # ===============================
-                ticker = exchange.fetch_ticker(symbol)
+                ticker = await exchange.fetch_ticker(symbol)
                 current_price = ticker['last']
 
                 funding_rate = None
                 try:
-                    funding = exchange.fetch_funding_rate(symbol)
+                    funding = await exchange.fetch_funding_rate(symbol)
                     funding_rate = funding['fundingRate']
                 except:
                     funding_rate = None
@@ -484,64 +233,29 @@ async def scan_all():
 
                 prev_day_high = daily_levels[symbol]['high']
                 prev_day_low = daily_levels[symbol]['low']
+                
 
-                distance_high = abs(current_price - prev_day_high) / prev_day_high
-                distance_low = abs(current_price - prev_day_low) / prev_day_low
+                # ===============================
+                # FETCH 15m DATA
+                # ===============================
 
-                ohlcv = exchange.fetch_ohlcv(symbol, '15m', limit=21)
+                ohlcv = await exchange.fetch_ohlcv(symbol, '15m', limit=21)
+
                 if not ohlcv or len(ohlcv) < 21:
                     continue
 
                 df = pd.DataFrame(ohlcv, columns=['ts','o','h','l','c','v'])
+
                 last = df.iloc[-1]
                 prev = df.iloc[-2]
 
                 # ===============================
-                # VOLUME + VOLATILITY BASELINES
-                # ===============================
-                avg_volume = df['v'].iloc[:-1].mean()
-                avg_range = (df['h'] - df['l']).iloc[:-1].mean()
-
-                if avg_volume == 0 or avg_range == 0:
-                    continue
-
-                volume_ratio = last['v'] / avg_volume
-                volatility_ratio = (last['h'] - last['l']) / avg_range
-
-                # ===============================
-                # CONTEXT CLASSIFICATION
-                # ===============================
-                structure = "Bullish" if df['c'].iloc[-1] > df['c'].iloc[-5] else "Bearish"
-
-                impulse_strength = (
-                    "Strong Expansion" if volatility_ratio > 1.3
-                    else "Moderate" if volatility_ratio > 0.9
-                    else "Weak"
-                )
-
-                behavior = (
-                    "Compression" if volatility_ratio < 0.9
-                    else "Expansion" if volatility_ratio > 1.1
-                    else "Normal"
-                )
-
-                volume_state = (
-                    "Increasing" if volume_ratio > 1.0
-                    else "Decreasing" if volume_ratio < 0.8
-                    else "Stable"
-                )
-
-                volatility_state = (
-                    "Expanding" if volatility_ratio > 1.1
-                    else "Contracting" if volatility_ratio < 0.9
-                    else "Stable"
-                )
-
-                # ===============================
                 # LIQUIDITY STACK ANALYSIS
                 # ===============================
+
                 lookback = 10
                 candles = df.iloc[-lookback:]
+
                 above_pdh = sum(c['h'] > prev_day_high for _, c in candles.iterrows())
                 below_pdl = sum(c['l'] < prev_day_low for _, c in candles.iterrows())
 
@@ -553,190 +267,448 @@ async def scan_all():
                     liquidity_bias = "Balanced Liquidity ⚖️"
 
                 # ===============================
-                # LIQUIDITY SWEEP DETECTION
+                # VOLUME + VOLATILITY BASELINES
                 # ===============================
-                pdl_sweep = prev['l'] < prev_day_low and prev['c'] > prev_day_low
-                pdh_sweep = prev['h'] > prev_day_high and prev['c'] < prev_day_high
+
+                avg_volume = df['v'].iloc[:-1].mean()
+                avg_range = (df['h'] - df['l']).iloc[:-1].mean()
+
+                if avg_volume == 0 or avg_range == 0:
+                    continue
+
+                volume_ratio = last['v'] / avg_volume
+                volatility_ratio = (last['h'] - last['l']) / avg_range
 
                 # ===============================
-                # SWEEP STRENGTH
+                # LIQUIDITY SWEEP DETECTION
                 # ===============================
+
+                pdl_sweep = (
+                    prev['l'] < prev_day_low and
+                    prev['c'] > prev_day_low
+                )
+
+                pdh_sweep = (
+                    prev['h'] > prev_day_high and
+                    prev['c'] < prev_day_high
+                )
+                # ===============================
+                # BREAKOUT ACCEPTANCE
+                # ===============================
+
+                bullish_acceptance = (
+                    prev['c'] > prev_day_high
+                    and last['c'] > prev_day_high
+                )
+
+                bearish_acceptance = (
+                    prev['c'] < prev_day_low
+                    and last['c'] < prev_day_low
+                )
+                # ===============================
+                # SWEEP STRENGTH SCORE
+                # ===============================
+
                 wick_size = abs(prev['h'] - prev['l'])
                 body_size = abs(prev['c'] - prev['o'])
+
                 wick_ratio = wick_size / body_size if body_size > 0 else 0
 
                 score = 0
-                if wick_ratio > 2: score += 3
-                if volume_ratio > 1.3: score += 3
-                if volatility_ratio > 1.2: score += 2
-                if pdl_sweep or pdh_sweep: score += 2
+
+                if wick_ratio > 2:
+                    score += 3
+                if volume_ratio > 1.3:
+                    score += 3
+                if volatility_ratio > 1.2:
+                    score += 2
+                if pdl_sweep or pdh_sweep:
+                    score += 2
 
                 sweep_strength = min(score, 10)
-                # ===============================
-                # BREAKOUT STRENGTH MODEL
-                # ===============================
-
-                break_score = 0
-
-                # volume momentum
-                if volume_ratio > 1.4:
-                    break_score += 3
-
-                # volatility expansion
-                if volatility_ratio > 1.3:
-                    break_score += 3
-
-                # strong close beyond liquidity
-                if prev['c'] > prev_day_high * 1.002 or prev['c'] < prev_day_low * 0.998:
-                    break_score += 2
-
-                # follow through momentum
-                if abs(last['c'] - prev['c']) > avg_range * 0.6:
-                    break_score += 2
-
-                break_strength = min(break_score, 10)
-
-                bullish_breakout = prev['c'] > prev_day_high * 1.001
-                bearish_breakout = prev['c'] < prev_day_low * 0.999
 
                 # ===============================
-                # REVERSAL SIGNAL
+                # CONTEXT CLASSIFICATION
                 # ===============================
-                square_symbol = format_square_symbol(symbol)
 
-                if pdl_sweep and sweep_strength >= 5:
+                structure = "Bullish" if df['c'].iloc[-1] > df['c'].iloc[-2] else "Bearish"
 
-                    if sweep_strength >= 7:
-                        trade_info = await execute_trade(symbol, "long", current_price)
-                    else:
-                        trade_info = ""
+                impulse_strength = (
+                    "Strong Expansion" if volatility_ratio > 1.5
+                    else "Moderate" if volatility_ratio > 1.0
+                    else "Weak"
+                )
 
-                    alerts.append(
-                        f"🔥 {square_symbol}\n"
-                        f"Price: {current_price}\n"
-                        f"PDH: {prev_day_high}\n"
-                        f"PDL: {prev_day_low}\n\n"
-                        f"Potential Bullish Reversal\n"
-                        f"Sweep Strength: {sweep_strength}/10\n"
-                        f"Funding Rate: {funding_text}\n"
-                        f"{trade_info}\n"
-                        f"{liquidity_bias}\n"
+                behavior = (
+                    "Compression" if volatility_ratio < 0.8
+                    else "Expansion" if volatility_ratio > 1.2
+                    else "Normal"
+                )
+
+                volume_state = (
+                    "Increasing" if volume_ratio > 1.2
+                    else "Decreasing" if volume_ratio < 0.8
+                    else "Stable"
+                )
+
+                volatility_state = (
+                    "Expanding" if volatility_ratio > 1.2
+                    else "Contracting" if volatility_ratio < 0.8
+                    else "Stable"
+                )
+                
+                # ===============================
+                # BREAKOUT PRESSURE DETECTION
+                # ===============================
+
+                bullish_break_pressure = (
+                    structure == "Bullish"
+                    and volume_ratio > 1.2
+                    and volatility_ratio > 1.2
+                    and behavior == "Expansion"
+                )
+
+                bearish_break_pressure = (
+                    structure == "Bearish"
+                    and volume_ratio > 1.2
+                    and volatility_ratio > 1.2
+                    and behavior == "Expansion"
+                )
+                # ===============================
+                # PRE-EXPLOSION DETECTION
+                # ===============================
+
+                range_compression = (last['h'] - last['l']) < avg_range * 0.7
+
+                pre_explosion = (
+                    behavior == "Compression"
+                    and volume_state == "Increasing"
+                    and volatility_state == "Contracting"
+                    and range_compression
+                )
+                # ===============================
+                # HIGH PROBABILITY CONTINUATION
+                # ===============================
+
+                high_prob_continuation = (
+                    (
+                        bullish_break_pressure and bullish_acceptance
+                        or
+                        bearish_break_pressure and bearish_acceptance
                     )
-                    alerts.append(separator)
-                    continue
-
-                elif pdh_sweep and sweep_strength >= 5:
-
-                    if sweep_strength >= 7:
-                        trade_info = await execute_trade(symbol, "short", current_price)
-
-                    alerts.append(
-                        f"🔥 {square_symbol}\n"
-                        f"Price: {current_price}\n"
-                        f"PDH: {prev_day_high}\n"
-                        f"PDL: {prev_day_low}\n\n"
-                        f"Potential Bearish Reversal\n"
-                        f"Sweep Strength: {sweep_strength}/10\n"
-                        f"Funding Rate: {funding_text}\n"
-                        f"{trade_info}\n"
-                        f"{liquidity_bias}\n"
-                    )
-                    alerts.append(separator)
-                    continue
-
+                    and impulse_strength == "Strong Expansion"
+                    and volume_ratio > 1.3
+                    and volatility_ratio > 1.2
+                )
                 # ===============================
-                # CONTINUATION DETECTION (UPGRADED)
+                # CONTINUATION DISTANCE FILTER
                 # ===============================
 
-                prev_close = prev['c']
-
-                bullish_break = prev_close > prev_day_high * 1.001
-                bearish_break = prev_close < prev_day_low * 0.999
-
-                # Distance protection
                 distance_from_pdh = abs(current_price - prev_day_high) / prev_day_high
                 distance_from_pdl = abs(current_price - prev_day_low) / prev_day_low
 
-                near_break_long = distance_from_pdh <= MAX_CONTINUATION_DISTANCE
-                near_break_short = distance_from_pdl <= MAX_CONTINUATION_DISTANCE
+                too_far_from_breakout = False
+                if structure == "Bullish" and current_price > prev_day_high:
+                    if distance_from_pdh > 0.01:
+                        too_far_from_breakout = True
 
+                if structure == "Bearish" and current_price < prev_day_low:
+                    if distance_from_pdl > 0.01:
+                        too_far_from_breakout = True
+                # ===============================
+                # TRAP DETECTION (SMART MONEY)
+                # ===============================
 
-                # Pullback detection (price revisits level)
-                pullback_long = (
-                    last['l'] <= prev_day_high * 1.002 and
-                    last['c'] > prev_day_high
+                bullish_trap = (
+                    pdl_sweep
+                    and funding_rate is not None
+                    and funding_rate < -0.005
                 )
 
-                pullback_short = (
-                    last['h'] >= prev_day_low * 0.998 and
-                    last['c'] < prev_day_low
+                bearish_trap = (
+                    pdh_sweep
+                    and funding_rate is not None
+                    and funding_rate > 0.005
                 )
+                # ===============================
+                # HIGH PROBABILITY REVERSAL LOGIC
+                # ===============================
 
-
-                # Momentum confirmation
-                momentum_confirm = (
-                    volume_ratio > 1.2
+                high_prob_bullish_reversal = (
+                    pdl_sweep
+                    and last['c'] > prev_day_low
+                    and sweep_strength >= 6
+                    and volume_ratio > 1.2
                     and volatility_ratio > 1.1
                 )
 
+                high_prob_bearish_reversal = (
+                    pdh_sweep
+                    and last['c'] < prev_day_high   # rejection
+                    and sweep_strength >= 6
+                    and volume_ratio > 1.2
+                    and volatility_ratio > 1.1
+                )
+                # ===============================
+                # ANTI SPAM MEMORY
+                # ===============================
 
-                # Break freshness check (avoid late chasing)
-                recent_break = (
-                    bullish_break or bearish_break
+                signal_type = None
+
+                if high_prob_bullish_reversal:
+                    signal_type = "bullish_reversal"
+
+                elif high_prob_bearish_reversal:
+                    signal_type = "bearish_reversal"
+
+                elif high_prob_continuation:
+                    signal_type = "continuation"
+
+                elif bullish_break_pressure:
+                    signal_type = "bullish_pressure"
+
+                elif bearish_break_pressure:
+                    signal_type = "bearish_pressure"
+
+                elif pre_explosion:
+                    signal_type = "compression"
+
+                signal_key = f"{symbol}_{signal_type}"
+
+                previous_signal = scanner_memory.get(symbol)
+
+                if previous_signal == signal_key:
+                    continue
+
+                scanner_memory[symbol] = signal_key
+                
+                # ===============================
+                # LIQUIDATION CASCADE DETECTION
+                # ===============================
+
+                short_squeeze = (
+                    funding_rate < -0.01
+                    and volume_ratio > 1.8
+                    and impulse_strength == "Strong Expansion"
                 )
 
+                long_squeeze = (
+                    funding_rate > 0.01
+                    and volume_ratio > 1.8
+                    and impulse_strength == "Strong Expansion"
+                )
 
-                # ===============================
-                # CONTINUATION TRADE EXECUTION
-                # ===============================
-
-                if (
-                    bullish_break
-                    and near_break_long
-                    and pullback_long
-                    and momentum_confirm
-                    and break_strength >= 6
-                ):
-
-                    trade_info = await execute_trade(symbol, "long", current_price)
+                if short_squeeze:
 
                     alerts.append(
-                        f"🚀 {square_symbol}\n"
+                        f"💥Watch ${symbol}\n"
+                        f"Short Squeeze Detected\n\n"
+                        f"Strong Bullish Expansion\n"
+                        f"Short Positions Under Pressure\n\n"
                         f"Price: {current_price}\n"
+                        f"Funding Rate: {funding_text}\n"
+                        f"Volume Spike: {volume_ratio:.2f}x\n\n"
+                        f"PDH: {prev_day_high}\n"
+                        f"PDL: {prev_day_low}"
+                    )
+
+                    alerts.append(separator)
+
+
+                elif long_squeeze:
+
+                    alerts.append(
+                        f"💥 Watch ${symbol}\n"
+                        f"Long Squeeze Detected\n\n"
+                        f"Strong Bearish Expansion\n"
+                        f"Long Positions Under Pressure\n\n"
+                        f"Price: {current_price}\n"
+                        f"Funding Rate: {funding_text}\n"
+                        f"Volume Spike: {volume_ratio:.2f}x\n\n"
+                        f"PDH: {prev_day_high}\n"
+                        f"PDL: {prev_day_low}"
+                    )
+
+                    alerts.append(separator)
+
+                # ===============================
+                # SIGNAL PRIORITY + EMOJI STACK
+                # ===============================
+
+                signal_score = 0
+
+                if high_prob_continuation and not too_far_from_breakout:
+                    signal_score += 3
+
+                if high_prob_bullish_reversal or high_prob_bearish_reversal:
+                    signal_score += 3
+
+                if bullish_break_pressure or bearish_break_pressure:
+                    signal_score += 2
+
+                if short_squeeze or long_squeeze:
+                    signal_score += 2
+
+                if pre_explosion:
+                    signal_score += 1
+
+
+                # convert score to stars
+                if signal_score >= 4:
+                    stars = "⭐⭐⭐"
+                elif signal_score >= 2:
+                    stars = "⭐⭐"
+                else:
+                    stars = "⭐"
+
+
+                
+
+                # ===============================
+                # SIGNAL PRIORITY SYSTEM
+                # ===============================
+                emoji_stack = ""
+                # 1️⃣ REVERSALS (highest priority)
+                if high_prob_bullish_reversal:
+                    emoji_stack = "🔄⬆️"
+
+                elif high_prob_bearish_reversal:
+                    emoji_stack = "🔄⬇️"
+
+                # 2️⃣ CONTINUATION
+                elif high_prob_continuation and not too_far_from_breakout:
+                    emoji_stack = "🧨🚀"
+
+                # 3️⃣ BREAK PRESSURE
+                elif bullish_break_pressure:
+                    emoji_stack = "🧨⬆️"
+
+                elif bearish_break_pressure:
+                    emoji_stack = "🧨⬇️"
+
+                # 4️⃣ LIQUIDATION CASCADE
+                elif short_squeeze:
+                    emoji_stack = "💥⬆️"
+
+                elif long_squeeze:
+                    emoji_stack = "💥⬇️"
+
+                # 5️⃣ PRE-EXPLOSION
+                elif pre_explosion:
+                    emoji_stack = "⚡"
+
+                # fallback
+                else:
+                    emoji_stack = "📊"
+
+                
+                # ===============================
+                # HIGH PROBABILITY ALERTS
+                # ===============================
+
+                if high_prob_bullish_reversal or high_prob_bearish_reversal or (high_prob_continuation and not too_far_from_breakout):
+
+                    # Compose message with $ symbol
+                    formatted_symbol = f"${symbol}"
+
+                    if high_prob_bullish_reversal:
+                        trap_tag = "🐻 SHORT TRAP" if bullish_trap else ""
+                        alert_text = (
+                            f"{stars} {emoji_stack} {formatted_symbol}\n"
+                            f"Potential Bullish Reversal {trap_tag}\n"
+                            f"Sweep Strength: {sweep_strength}/10\n"
+                            f"Funding Rate: {funding_text}\n\n"
+                            f"Liquidity Grab Below PDL\n"
+                            f"PDH: {prev_day_high}\n"
+                            f"PDL: {prev_day_low}\n\n"
+                            f"{liquidity_bias}\n"
+                            f"Volume Expansion: {volume_ratio:.2f}x\n"
+                            f"Volatility Expansion: {volatility_ratio:.2f}x\n\n"
+                        )
+
+                    elif high_prob_bearish_reversal:
+                        trap_tag = "🐂 LONG TRAP" if bearish_trap else ""
+                        alert_text = (
+                            f"{stars} {emoji_stack} {formatted_symbol}\n"
+                            f"Potential Bearish Reversal {trap_tag}\n"
+                            f"Sweep Strength: {sweep_strength}/10\n"
+                            f"Funding Rate: {funding_text}\n\n"
+                            f"Liquidity Grab Above PDH\n"
+                            f"PDH: {prev_day_high}\n"
+                            f"PDL: {prev_day_low}\n\n"
+                            f"{liquidity_bias}\n"
+                            f"Volume Expansion: {volume_ratio:.2f}x\n"
+                            f"Volatility Expansion: {volatility_ratio:.2f}x\n\n"
+                        )
+
+                    elif high_prob_continuation and not too_far_from_breakout:
+                        direction = "Bullish Continuation" if structure == "Bullish" else "Bearish Continuation"
+                        alert_text = (
+                            f"{stars} {emoji_stack} {formatted_symbol}\n"
+                            f"High Probability {direction}\n\n"
+                            f"Price: {current_price}\n"
+                            f"Funding Rate: {funding_text}\n\n"
+                            f"Context:\n"
+                            f"• Structure: {structure}\n"
+                            f"• Impulse: {impulse_strength}\n"
+                            f"• Volume: {volume_state}\n"
+                            f"• Volatility: {volatility_state}\n\n"
+                            f"PDH: {prev_day_high}\n"
+                            f"PDL: {prev_day_low}\n\n"
+                            f"{liquidity_bias}\n"
+                        )
+
+                    # append to alerts for Telegram
+                    alerts.append(alert_text)
+                    alerts.append(separator)
+
+                    # also send to Binance Square
+                    send_binance_square(alert_text)
+                    continue
+                # ===============================
+                # PRE-EXPLOSION ALERT
+                # ===============================
+
+                if pre_explosion:
+
+                    alerts.append(
+                        f"{stars} {emoji_stack} ${symbol}\n"
+                        f"Market Compression Detected\n"
+                        f"Possible Explosive Move Incoming\n\n"
+                        f"Price: {current_price}\n"
+                        f"Funding Rate: {funding_text}\n\n"
+                        f"Context:\n"
+                        f"• Structure: {structure}\n"
+                        f"• Behavior: {behavior}\n"
+                        f"• Volume: {volume_state}\n"
+                        f"• Volatility: {volatility_state}\n\n"
                         f"PDH: {prev_day_high}\n"
                         f"PDL: {prev_day_low}\n\n"
-                        f"Bullish Break → Pullback → Reclaim\n"
-                        f"Break Strength: {break_strength}/10\n"
-                        f"Distance From PDH: {distance_from_pdh*100:.2f}%\n"
-                        f"Funding Rate: {funding_text}\n"
-                        f"{trade_info}\n"
                         f"{liquidity_bias}\n"
                     )
 
                     alerts.append(separator)
                     continue
+                # ===============================
+                # BREAKOUT PRESSURE ALERT
+                # ===============================
 
+                if bullish_break_pressure or bearish_break_pressure:
 
-                elif (
-                    bearish_break
-                    and near_break_short
-                    and pullback_short
-                    and momentum_confirm
-                    and break_strength >= 6
-                ):
-
-                    trade_info = await execute_trade(symbol, "short", current_price)
+                    direction = "Bullish Breakout Pressure" if bullish_break_pressure else "Bearish Breakout Pressure"
 
                     alerts.append(
-                        f"🚀 {square_symbol}\n"
+                        f"{stars} {emoji_stack} ${symbol}\n"
+                        f"{direction}\n\n"
                         f"Price: {current_price}\n"
+                        f"Funding Rate: {funding_text}\n\n"
+                        f"Context:\n"
+                        f"• Structure: {structure}\n"
+                        f"• Behavior: {behavior}\n"
+                        f"• Volume: {volume_state}\n"
+                        f"• Volatility: {volatility_state}\n\n"
                         f"PDH: {prev_day_high}\n"
                         f"PDL: {prev_day_low}\n\n"
-                        f"Bearish Break → Pullback → Reclaim\n"
-                        f"Break Strength: {break_strength}/10\n"
-                        f"Distance From PDL: {distance_from_pdl*100:.2f}%\n"
-                        f"Funding Rate: {funding_text}\n"
-                        f"{trade_info}\n"
                         f"{liquidity_bias}\n"
                     )
 
@@ -744,79 +716,44 @@ async def scan_all():
                     continue
                 
 
-                # ===============================
-                # RADAR ALERTS
-                # ===============================
-                if distance_high <= DISTANCE_THRESHOLD:
-                    model_bias, action = get_model_action(
-                        structure, impulse_strength, behavior, volume_state, volatility_state
-                    )
-
-                    alerts.append(
-                        f"🚀 {square_symbol}\n"
-                        f"Price: {current_price}\n"
-                        f"PDH: {prev_day_high}\n"
-                        f"PDL: {prev_day_low}\n\n"
-                        f"Approaching PDH ({distance_high*100:.2f}%)\n\n"
-                        f"Context:\n"
-                        f"• 15m Structure: {structure}\n"
-                        f"• Impulse: {impulse_strength}\n"
-                        f"• Behavior: {behavior}\n"
-                        f"• Volume: {volume_state}\n"
-                        f"• Volatility: {volatility_state}\n"
-                        f"Model Bias:\n→ {model_bias}\n"
-                        f"Action:\n{action}\n"
-                        f"{liquidity_bias}\n"
-                    )
-                    alerts.append(separator)
-
-                elif distance_low <= DISTANCE_THRESHOLD:
-                    model_bias, action = get_model_action(
-                        structure, impulse_strength, behavior, volume_state, volatility_state
-                    )
-
-                    alerts.append(
-                        f"🚀{square_symbol}\n"
-                        f"Price: {current_price}\n"
-                        f"PDH: {prev_day_high}\n"
-                        f"PDL: {prev_day_low}\n\n"
-                        f"Approaching PDL ({distance_low*100:.2f}%)\n\n"
-                        f"Context:\n"
-                        f"• 15m Structure: {structure}\n"
-                        f"• Impulse: {impulse_strength}\n"
-                        f"• Behavior: {behavior}\n"
-                        f"• Volume: {volume_state}\n"
-                        f"• Volatility: {volatility_state}\n"
-                        f"Model Bias:\n→ {model_bias}\n"
-                        f"Action:\n{action}\n"
-                        f"{liquidity_bias}\n"
-                    )
-                    alerts.append(separator)
-
-            except Exception as e:
-                print(symbol, "scan error:", e)
+            except:
                 continue
 
+                
+        # ===============================
         # TELEGRAM SEND
+        # ===============================
+
         if alerts:
+
             countdown = get_daily_countdown()
-            message = f"⚠️ <b>RADAR</b>\n\nDaily Candle Close In: {countdown}\n\n"
+
+            message = (
+                f"⚠️ <b>RADAR</b>\n\n"
+                f"Daily Candle Close In: {countdown}\n\n"
+            )
 
             for alert in alerts:
                 message += alert + "\n"
 
-            message += separator + donation_message
+            message += separator
+            message += donation_message
 
             send_telegram_message(message)
+
             print("Liquidity alerts sent.")
 
         else:
-            print("No liquidity proximity detected.")
+
+            print("No high probability setups detected.")
 
     except Exception as e:
+
         print(f"Scan error: {e}")
 
     finally:
+
+        await exchange.close()
         print("Exchange session closed cleanly.")
 # ============================================================
 # LOOP
@@ -828,12 +765,9 @@ def run_scan():
 if __name__ == "__main__":
 
     print("=== Liquidity Radar Started ===")
-    
+
 
     while True:
-        
-        for symbol in ACTIVE_TRADES:
-            manage_breakeven(symbol)
 
         wait_until_next_5min()
 

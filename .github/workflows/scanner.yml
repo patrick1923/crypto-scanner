@@ -1,9 +1,8 @@
-name: Crypto Scanner
+name: Liquidity Radar
 
 on:
   schedule:
-    - cron: '*/5 * * * *'   # every 5 minutes
-  workflow_dispatch:
+    - cron: "*/5 * * * *"
 
 jobs:
   run-scanner:
@@ -16,15 +15,15 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.10'
+          python-version: 3.11
 
       - name: Install dependencies
         run: |
-          pip install -r requirements.txt
+          pip install ccxt pandas pytz python-dotenv requests
 
       - name: Run scanner
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          python local_scanner_v2.py
+          BINANCE_SQUARE_KEY: ${{ secrets.BINANCE_SQUARE_KEY }}
+        run: python scanner.py
