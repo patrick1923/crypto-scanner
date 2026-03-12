@@ -400,6 +400,25 @@ async def scan_all():
                     and volume_ratio > 1.3
                     and volatility_ratio > 1.2
                 )
+                
+                # ===============================
+                # LIQUIDITY APPROACH FILTER
+                # ===============================
+
+                distance_high = abs(current_price - prev_day_high) / prev_day_high
+                distance_low = abs(current_price - prev_day_low) / prev_day_low
+
+                # ===============================
+                # TREND DETECTION (PRO TIP)
+                # ===============================
+
+                trend_up = (
+                    df['c'].iloc[-3] < df['c'].iloc[-2] < df['c'].iloc[-1]
+                )
+
+                trend_down = (
+                    df['c'].iloc[-3] > df['c'].iloc[-2] > df['c'].iloc[-1]
+                )
                 # ===============================
                 # CONTINUATION DISTANCE FILTER
                 # ===============================
@@ -408,13 +427,27 @@ async def scan_all():
                 distance_from_pdl = abs(current_price - prev_day_low) / prev_day_low
 
                 too_far_from_breakout = False
-                if structure == "Bullish" and current_price > prev_day_high:
-                    if distance_from_pdh > 0.01:
-                        too_far_from_breakout = True
 
-                if structure == "Bearish" and current_price < prev_day_low:
-                    if distance_from_pdl > 0.01:
-                        too_far_from_breakout = True
+                if structure == "Bullish" and distance_from_pdh > 0.01:
+                    too_far_from_breakout = True
+
+                if structure == "Bearish" and distance_from_pdl > 0.01:
+                    too_far_from_breakout = True
+                approaching_pdh = (
+                    current_price < prev_day_high
+                    and trend_up
+                    and distance_high <= DISTANCE_THRESHOLD
+                )
+
+                approaching_pdl = (
+                    current_price > prev_day_low
+                    and trend_down
+                    and distance_low <= DISTANCE_THRESHOLD
+                )
+
+                approaching_liquidity = approaching_pdh or approaching_pdl
+
+                
                 # ===============================
                 # TRAP DETECTION (SMART MONEY)
                 # ===============================
@@ -473,14 +506,20 @@ async def scan_all():
                 elif pre_explosion:
                     signal_type = "compression"
 
+                now = time.time()
+
                 signal_key = f"{symbol}_{signal_type}"
 
-                previous_signal = scanner_memory.get(symbol)
+                previous = scanner_memory.get(signal_key)
 
-                if previous_signal == signal_key:
-                    continue
+                if previous:
+                    prev_signal, prev_time = previous
+                    
+                    # same signal within 30 minutes = ignore
+                    if prev_signal == signal_key and (now - prev_time) < 1800:
+                        continue
 
-                scanner_memory[symbol] = signal_key
+                scanner_memory[signal_key] = now
                 
                 # ===============================
                 # LIQUIDATION CASCADE DETECTION
@@ -561,8 +600,17 @@ async def scan_all():
                 else:
                     stars = "⭐"
 
+                # ===============================
+                # STAR SIGNAL APPROACH FILTER
+                # ===============================
 
-                
+                if (
+                    stars in ["⭐⭐", "⭐⭐⭐"]
+                    and not approaching_liquidity
+                    and not pdl_sweep
+                    and not pdh_sweep
+                ):
+                    continue
 
                 # ===============================
                 # SIGNAL PRIORITY SYSTEM
@@ -601,7 +649,30 @@ async def scan_all():
                 else:
                     emoji_stack = "📊"
 
-                
+                # ===============================
+                # LIQUIDITY TARGET ENGINE (⭐⭐⭐)
+                # ===============================
+
+                target_1 = None
+                target_2 = None
+
+                if stars == "⭐⭐⭐":
+
+                    if high_prob_bullish_reversal:
+                        target_1 = prev_day_high
+                        target_2 = prev_day_high * 1.01
+
+                    elif high_prob_bearish_reversal:
+                        target_1 = prev_day_low
+                        target_2 = prev_day_low * 0.99
+
+                    elif high_prob_continuation and structure == "Bullish":
+                        target_1 = prev_day_high * 1.01
+                        target_2 = prev_day_high * 1.02
+
+                    elif high_prob_continuation and structure == "Bearish":
+                        target_1 = prev_day_low * 0.99
+                        target_2 = prev_day_low * 0.98
                 # ===============================
                 # HIGH PROBABILITY ALERTS
                 # ===============================
@@ -657,13 +728,22 @@ async def scan_all():
                             f"PDL: {prev_day_low}\n\n"
                             f"{liquidity_bias}\n"
                         )
+                    target_text = ""
 
+                    if stars == "⭐⭐⭐" and target_1:
+
+                        target_text = (
+                            f"\nLiquidity Targets:\n"
+                            f"• Target 1: {target_1:.4f}\n"
+                            f"• Target 2: {target_2:.4f}\n"
+                        )
                     # append to alerts for Telegram
                     alerts.append(alert_text)
                     alerts.append(separator)
 
                     # also send to Binance Square
-                    send_binance_square(alert_text)
+                    if stars == "⭐⭐⭐":
+                        send_binance_square(alert_text) 
                     continue
                 # ===============================
                 # PRE-EXPLOSION ALERT
@@ -762,11 +842,11 @@ async def scan_all():
 def run_scan():
     asyncio.run(scan_all())
 
-if __name__ == "__main__":
+while True:
 
-    print("=== Liquidity Radar Started ===")
+    wait_until_next_5min()
 
-    print("\n🔄 Running scheduled scan...\n")
+    print("\n🔄 Running synchronized scan...\n")
     print(f"\nSCAN TIME UTC: {datetime.utcnow().strftime('%H:%M:%S')}")
 
     run_scan()
