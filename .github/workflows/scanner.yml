@@ -27,4 +27,4 @@ jobs:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           BINANCE_SQUARE_KEY: ${{ secrets.BINANCE_SQUARE_KEY }}
-        run: python scanner.py
+        run: python local_scanner_v2.py
