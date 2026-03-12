@@ -510,13 +510,10 @@ async def scan_all():
 
                 signal_key = f"{symbol}_{signal_type}"
 
-                previous = scanner_memory.get(signal_key)
+                previous_time = scanner_memory.get(signal_key)
 
-                if previous:
-                    prev_signal, prev_time = previous
-                    
-                    # same signal within 30 minutes = ignore
-                    if prev_signal == signal_key and (now - prev_time) < 1800:
+                if previous_time:
+                    if (now - previous_time) < 1800:
                         continue
 
                 scanner_memory[signal_key] = now
@@ -609,6 +606,7 @@ async def scan_all():
                     and not approaching_liquidity
                     and not pdl_sweep
                     and not pdh_sweep
+                    and not high_prob_continuation
                 ):
                     continue
 
@@ -743,7 +741,7 @@ async def scan_all():
 
                     # also send to Binance Square
                     if stars == "⭐⭐⭐":
-                        send_binance_square(alert_text) 
+                        send_binance_square(alert_text + target_text) 
                     continue
                 # ===============================
                 # PRE-EXPLOSION ALERT
