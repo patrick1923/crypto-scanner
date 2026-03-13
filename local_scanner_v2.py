@@ -109,37 +109,7 @@ async def preload_daily_levels(exchange, symbols):
 
     return daily_levels
 
-# ============================================================
-# MODEL ACTION ENGINE
-# ============================================================
 
-def get_model_action(structure, impulse, behavior, volume, volatility):
-
-    if structure == "Bullish":
-
-        if behavior == "Compression" and volume == "Increasing":
-            return "Breakout Continuation Likely", "Wait for 1m base then expansion break."
-
-        if behavior == "Expansion" and volume == "Increasing":
-            return "Momentum Active", "Wait for pullback before continuation entry."
-
-        if behavior == "Compression" and volume == "Decreasing":
-            return "Liquidity Building", "Wait for volume expansion confirmation."
-
-        return "Unclear Bullish Condition", "No trade. Wait for cleaner setup."
-
-    else:
-
-        if behavior == "Compression" and volume == "Increasing":
-            return "Breakdown Continuation Likely", "Wait for 1m breakdown with expansion."
-
-        if behavior == "Expansion" and volume == "Increasing":
-            return "Bearish Momentum Active", "Wait for pullback before short continuation."
-
-        if behavior == "Compression" and volume == "Decreasing":
-            return "Liquidity Building Below", "Wait for expansion before short."
-
-        return "Unclear Bearish Condition", "No trade. Wait for cleaner setup."
 
 ################################################
 
@@ -204,7 +174,7 @@ async def scan_all():
             reverse=True
         )
 
-        symbols = [s[0] for s in sorted_symbols[:25]]
+        symbols = [s[0] for s in sorted_symbols[:50]]
 
         print(f"Selected Top {len(symbols)} ultra-liquid pairs.")
 
@@ -226,6 +196,21 @@ async def scan_all():
                 try:
                     funding = await exchange.fetch_funding_rate(symbol)
                     funding_rate = funding['fundingRate']
+
+                    previous_funding = funding.get("previousFundingRate")
+
+                    funding_delta = 0
+                    funding_trend = ""
+
+                    if previous_funding is not None:
+                        funding_delta = funding_rate - previous_funding
+                        
+                        if funding_delta > 0:
+                            funding_trend = f"+{funding_delta*100:.4f}%"
+                        elif funding_delta < 0:
+                            funding_trend = f"{funding_delta*100:.4f}%"
+                        else:
+                            funding_trend = "0%"
                 except:
                     funding_rate = None
 
@@ -234,6 +219,12 @@ async def scan_all():
                 prev_day_high = daily_levels[symbol]['high']
                 prev_day_low = daily_levels[symbol]['low']
                 
+                # ===============================
+                # DISTANCE FROM DAILY LIQUIDITY
+                # ===============================
+
+                distance_from_pdh = abs(current_price - prev_day_high) / prev_day_high
+                distance_from_pdl = abs(current_price - prev_day_low) / prev_day_low
 
                 # ===============================
                 # FETCH 15m DATA
@@ -266,6 +257,8 @@ async def scan_all():
                 else:
                     liquidity_bias = "Balanced Liquidity ⚖️"
 
+                
+
                 # ===============================
                 # VOLUME + VOLATILITY BASELINES
                 # ===============================
@@ -279,6 +272,9 @@ async def scan_all():
                 volume_ratio = last['v'] / avg_volume
                 volatility_ratio = (last['h'] - last['l']) / avg_range
 
+                market_dead = (avg_range < current_price * 0.0015)
+                if market_dead:
+                    continue
                 # ===============================
                 # LIQUIDITY SWEEP DETECTION
                 # ===============================
@@ -296,14 +292,26 @@ async def scan_all():
                 # BREAKOUT ACCEPTANCE
                 # ===============================
 
+                body_size_last = abs(last['c'] - last['o'])
+                range_last = last['h'] - last['l']
+
+                body_strength = body_size_last / range_last if range_last > 0 else 0
+
+                strong_acceptance = (
+                    body_strength > 0.6
+                    and volume_ratio > 1.3
+                )
+
                 bullish_acceptance = (
                     prev['c'] > prev_day_high
                     and last['c'] > prev_day_high
+                    and strong_acceptance
                 )
 
                 bearish_acceptance = (
                     prev['c'] < prev_day_low
                     and last['c'] < prev_day_low
+                    and strong_acceptance
                 )
                 # ===============================
                 # SWEEP STRENGTH SCORE
@@ -357,6 +365,7 @@ async def scan_all():
                     else "Stable"
                 )
                 
+                
                 # ===============================
                 # BREAKOUT PRESSURE DETECTION
                 # ===============================
@@ -400,53 +409,38 @@ async def scan_all():
                     and volume_ratio > 1.3
                     and volatility_ratio > 1.2
                 )
-                
                 # ===============================
-                # LIQUIDITY APPROACH FILTER
-                # ===============================
-
-                distance_high = abs(current_price - prev_day_high) / prev_day_high
-                distance_low = abs(current_price - prev_day_low) / prev_day_low
-
-                # ===============================
-                # TREND DETECTION (PRO TIP)
+                # APPROACHING LIQUIDITY
                 # ===============================
 
-                trend_up = (
-                    df['c'].iloc[-3] < df['c'].iloc[-2] < df['c'].iloc[-1]
+                approaching = ""
+
+                if distance_from_pdh < 0.003:
+                    approaching = "Approaching PDH 🔼"
+
+                elif distance_from_pdl < 0.003:
+                    approaching = "Approaching PDL 🔽"
+
+                # ===============================
+                # GLOBAL DISTANCE FILTER
+                # ===============================
+
+                max_signal_distance = 0.015  # 1.5%
+
+                far_from_liquidity = (
+                    distance_from_pdh > max_signal_distance
+                    and distance_from_pdl > max_signal_distance
                 )
-
-                trend_down = (
-                    df['c'].iloc[-3] > df['c'].iloc[-2] > df['c'].iloc[-1]
-                )
-                # ===============================
-                # CONTINUATION DISTANCE FILTER
-                # ===============================
-
-                distance_from_pdh = abs(current_price - prev_day_high) / prev_day_high
-                distance_from_pdl = abs(current_price - prev_day_low) / prev_day_low
 
                 too_far_from_breakout = False
+                if structure == "Bullish" and current_price > prev_day_high:
+                    if distance_from_pdh > 0.01:
+                        too_far_from_breakout = True
 
-                if structure == "Bullish" and distance_from_pdh > 0.01:
-                    too_far_from_breakout = True
-
-                if structure == "Bearish" and distance_from_pdl > 0.01:
-                    too_far_from_breakout = True
-                approaching_pdh = (
-                    current_price < prev_day_high
-                    and trend_up
-                    and distance_high <= DISTANCE_THRESHOLD
-                )
-
-                approaching_pdl = (
-                    current_price > prev_day_low
-                    and trend_down
-                    and distance_low <= DISTANCE_THRESHOLD
-                )
-
-                approaching_liquidity = approaching_pdh or approaching_pdl
-
+                if structure == "Bearish" and current_price < prev_day_low:
+                    if distance_from_pdl > 0.01:
+                        too_far_from_breakout = True
+                
                 
                 # ===============================
                 # TRAP DETECTION (SMART MONEY)
@@ -482,6 +476,33 @@ async def scan_all():
                     and volume_ratio > 1.2
                     and volatility_ratio > 1.1
                 )
+
+                # ===============================
+                # MODEL ACTION ENGINE
+                # ===============================
+
+                model_action = "Wait"
+                model_instruction = "Observe market behavior"
+
+                if behavior == "Compression":
+                    model_action = "Breakout Pending"
+                    model_instruction = "Watch for volatility expansion."
+
+                elif impulse_strength == "Strong Expansion" and structure == "Bullish":
+                    model_action = "Bullish Continuation Likely"
+                    model_instruction = "Look for pullback long."
+
+                elif impulse_strength == "Strong Expansion" and structure == "Bearish":
+                    model_action = "Bearish Continuation Likely"
+                    model_instruction = "Look for pullback short."
+
+                elif high_prob_bullish_reversal:
+                    model_action = "Bullish Reversal Setup"
+                    model_instruction = "Wait for confirmation candle."
+
+                elif high_prob_bearish_reversal:
+                    model_action = "Bearish Reversal Setup"
+                    model_instruction = "Watch rejection confirmation."
                 # ===============================
                 # ANTI SPAM MEMORY
                 # ===============================
@@ -510,13 +531,16 @@ async def scan_all():
 
                 signal_key = f"{symbol}_{signal_type}"
 
-                previous_time = scanner_memory.get(signal_key)
+                previous = scanner_memory.get(symbol)
 
-                if previous_time:
-                    if (now - previous_time) < 1800:
+                if previous:
+                    prev_signal, prev_time = previous
+                    
+                    # same signal within 30 minutes = ignore
+                    if prev_signal == signal_key and (now - prev_time) < 1800:
                         continue
 
-                scanner_memory[signal_key] = now
+                scanner_memory[symbol] = (signal_key, now)
                 
                 # ===============================
                 # LIQUIDATION CASCADE DETECTION
@@ -542,7 +566,7 @@ async def scan_all():
                         f"Strong Bullish Expansion\n"
                         f"Short Positions Under Pressure\n\n"
                         f"Price: {current_price}\n"
-                        f"Funding Rate: {funding_text}\n"
+                        f"Funding Rate: {funding_text} ({funding_trend})\n"
                         f"Volume Spike: {volume_ratio:.2f}x\n\n"
                         f"PDH: {prev_day_high}\n"
                         f"PDL: {prev_day_low}"
@@ -559,7 +583,7 @@ async def scan_all():
                         f"Strong Bearish Expansion\n"
                         f"Long Positions Under Pressure\n\n"
                         f"Price: {current_price}\n"
-                        f"Funding Rate: {funding_text}\n"
+                        f"Funding Rate: {funding_text} ({funding_trend})\n"
                         f"Volume Spike: {volume_ratio:.2f}x\n\n"
                         f"PDH: {prev_day_high}\n"
                         f"PDL: {prev_day_low}"
@@ -589,7 +613,6 @@ async def scan_all():
                     signal_score += 1
 
 
-                # convert score to stars
                 if signal_score >= 4:
                     stars = "⭐⭐⭐"
                 elif signal_score >= 2:
@@ -597,18 +620,12 @@ async def scan_all():
                 else:
                     stars = "⭐"
 
-                # ===============================
-                # STAR SIGNAL APPROACH FILTER
-                # ===============================
-
-                if (
-                    stars in ["⭐⭐", "⭐⭐⭐"]
-                    and not approaching_liquidity
-                    and not pdl_sweep
-                    and not pdh_sweep
-                    and not high_prob_continuation
-                ):
+                # Ignore strong signals if too far from liquidity
+                if stars in ["⭐⭐", "⭐⭐⭐"] and far_from_liquidity:
                     continue
+
+
+                
 
                 # ===============================
                 # SIGNAL PRIORITY SYSTEM
@@ -647,30 +664,7 @@ async def scan_all():
                 else:
                     emoji_stack = "📊"
 
-                # ===============================
-                # LIQUIDITY TARGET ENGINE (⭐⭐⭐)
-                # ===============================
-
-                target_1 = None
-                target_2 = None
-
-                if stars == "⭐⭐⭐":
-
-                    if high_prob_bullish_reversal:
-                        target_1 = prev_day_high
-                        target_2 = prev_day_high * 1.01
-
-                    elif high_prob_bearish_reversal:
-                        target_1 = prev_day_low
-                        target_2 = prev_day_low * 0.99
-
-                    elif high_prob_continuation and structure == "Bullish":
-                        target_1 = prev_day_high * 1.01
-                        target_2 = prev_day_high * 1.02
-
-                    elif high_prob_continuation and structure == "Bearish":
-                        target_1 = prev_day_low * 0.99
-                        target_2 = prev_day_low * 0.98
+                
                 # ===============================
                 # HIGH PROBABILITY ALERTS
                 # ===============================
@@ -686,10 +680,11 @@ async def scan_all():
                             f"{stars} {emoji_stack} {formatted_symbol}\n"
                             f"Potential Bullish Reversal {trap_tag}\n"
                             f"Sweep Strength: {sweep_strength}/10\n"
-                            f"Funding Rate: {funding_text}\n\n"
+                            f"Funding Rate: {funding_text} ({funding_trend})\n\n"
                             f"Liquidity Grab Below PDL\n"
                             f"PDH: {prev_day_high}\n"
                             f"PDL: {prev_day_low}\n\n"
+                            f"{approaching}\n"
                             f"{liquidity_bias}\n"
                             f"Volume Expansion: {volume_ratio:.2f}x\n"
                             f"Volatility Expansion: {volatility_ratio:.2f}x\n\n"
@@ -701,10 +696,11 @@ async def scan_all():
                             f"{stars} {emoji_stack} {formatted_symbol}\n"
                             f"Potential Bearish Reversal {trap_tag}\n"
                             f"Sweep Strength: {sweep_strength}/10\n"
-                            f"Funding Rate: {funding_text}\n\n"
+                            f"Funding Rate: {funding_text} ({funding_trend})\n\n"
                             f"Liquidity Grab Above PDH\n"
                             f"PDH: {prev_day_high}\n"
                             f"PDL: {prev_day_low}\n\n"
+                            f"{approaching}\n"
                             f"{liquidity_bias}\n"
                             f"Volume Expansion: {volume_ratio:.2f}x\n"
                             f"Volatility Expansion: {volatility_ratio:.2f}x\n\n"
@@ -716,32 +712,25 @@ async def scan_all():
                             f"{stars} {emoji_stack} {formatted_symbol}\n"
                             f"High Probability {direction}\n\n"
                             f"Price: {current_price}\n"
-                            f"Funding Rate: {funding_text}\n\n"
+                            f"Funding Rate: {funding_text} ({funding_trend})\n\n"
                             f"Context:\n"
                             f"• Structure: {structure}\n"
                             f"• Impulse: {impulse_strength}\n"
                             f"• Volume: {volume_state}\n"
                             f"• Volatility: {volatility_state}\n\n"
+                            f"Model Action: {model_action}\n"
+                            f"Instruction: {model_instruction}\n\n"
                             f"PDH: {prev_day_high}\n"
                             f"PDL: {prev_day_low}\n\n"
                             f"{liquidity_bias}\n"
                         )
-                    target_text = ""
 
-                    if stars == "⭐⭐⭐" and target_1:
-
-                        target_text = (
-                            f"\nLiquidity Targets:\n"
-                            f"• Target 1: {target_1:.4f}\n"
-                            f"• Target 2: {target_2:.4f}\n"
-                        )
                     # append to alerts for Telegram
                     alerts.append(alert_text)
                     alerts.append(separator)
 
                     # also send to Binance Square
-                    if stars == "⭐⭐⭐":
-                        send_binance_square(alert_text + target_text) 
+                    send_binance_square(alert_text)
                     continue
                 # ===============================
                 # PRE-EXPLOSION ALERT
@@ -754,12 +743,14 @@ async def scan_all():
                         f"Market Compression Detected\n"
                         f"Possible Explosive Move Incoming\n\n"
                         f"Price: {current_price}\n"
-                        f"Funding Rate: {funding_text}\n\n"
+                        f"Funding Rate: {funding_text} ({funding_trend})\n\n"
                         f"Context:\n"
                         f"• Structure: {structure}\n"
-                        f"• Behavior: {behavior}\n"
+                        f"• Impulse: {impulse_strength}\n"
                         f"• Volume: {volume_state}\n"
                         f"• Volatility: {volatility_state}\n\n"
+                        f"Model Action: {model_action}\n"
+                        f"Instruction: {model_instruction}\n\n"
                         f"PDH: {prev_day_high}\n"
                         f"PDL: {prev_day_low}\n\n"
                         f"{liquidity_bias}\n"
@@ -779,7 +770,7 @@ async def scan_all():
                         f"{stars} {emoji_stack} ${symbol}\n"
                         f"{direction}\n\n"
                         f"Price: {current_price}\n"
-                        f"Funding Rate: {funding_text}\n\n"
+                        f"Funding Rate: {funding_text} ({funding_trend})\n\n"
                         f"Context:\n"
                         f"• Structure: {structure}\n"
                         f"• Behavior: {behavior}\n"
