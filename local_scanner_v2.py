@@ -225,7 +225,17 @@ async def scan_all():
 
                 distance_from_pdh = abs(current_price - prev_day_high) / prev_day_high
                 distance_from_pdl = abs(current_price - prev_day_low) / prev_day_low
+                
+                target = None
+                target_distance = None
 
+                if structure == "Bullish":
+                    target = prev_day_high
+                    target_distance = (prev_day_high - current_price) / current_price * 100
+
+                elif structure == "Bearish":
+                    target = prev_day_low
+                    target_distance = (current_price - prev_day_low) / current_price * 100
                 # ===============================
                 # FETCH 15m DATA
                 # ===============================
@@ -266,8 +276,15 @@ async def scan_all():
                 avg_volume = df['v'].iloc[:-1].mean()
                 avg_range = (df['h'] - df['l']).iloc[:-1].mean()
 
+                
                 if avg_volume == 0 or avg_range == 0:
                     continue
+                # ===============================
+                # RANGE EXPANSION FILTER
+                # ===============================
+
+                current_range = last['h'] - last['l']
+                range_expansion = current_range > (avg_range * 1.2)
 
                 volume_ratio = last['v'] / avg_volume
                 volatility_ratio = (last['h'] - last['l']) / avg_range
@@ -375,6 +392,7 @@ async def scan_all():
                     and volume_ratio > 1.2
                     and volatility_ratio > 1.2
                     and behavior == "Expansion"
+                    and strong_acceptance
                 )
 
                 bearish_break_pressure = (
@@ -382,6 +400,7 @@ async def scan_all():
                     and volume_ratio > 1.2
                     and volatility_ratio > 1.2
                     and behavior == "Expansion"
+                    and strong_acceptance
                 )
                 # ===============================
                 # PRE-EXPLOSION DETECTION
@@ -408,6 +427,7 @@ async def scan_all():
                     and impulse_strength == "Strong Expansion"
                     and volume_ratio > 1.3
                     and volatility_ratio > 1.2
+                    and range_expansion
                 )
                 # ===============================
                 # APPROACHING LIQUIDITY
@@ -664,7 +684,40 @@ async def scan_all():
                 else:
                     emoji_stack = "📊"
 
-                
+                # ===============================
+                # EMOJI INTERPRETATION ENGINE
+                # ===============================
+
+                emoji_meaning = ""
+                next_action = ""
+
+                if "⚡" in emoji_stack and "🧨" not in emoji_stack:
+                    emoji_meaning = "Market compression detected"
+                    next_action = "Watch for breakout expansion."
+
+                elif "⚡" in emoji_stack and "🧨" in emoji_stack:
+                    emoji_meaning = "Compression with breakout pressure"
+                    next_action = "Prepare for volatility expansion."
+
+                elif "🧨" in emoji_stack and "🚀" not in emoji_stack:
+                    emoji_meaning = "Breakout pressure building"
+                    next_action = "Wait for confirmation breakout candle."
+
+                elif "🧨" in emoji_stack and "🚀" in emoji_stack:
+                    emoji_meaning = "Confirmed breakout momentum"
+                    next_action = "Look for pullback continuation entry."
+
+                elif "🔄" in emoji_stack:
+                    emoji_meaning = "Liquidity sweep reversal detected"
+                    next_action = "Wait for confirmation candle."
+
+                elif "💥" in emoji_stack:
+                    emoji_meaning = "Liquidation cascade in progress"
+                    next_action = "Momentum trade opportunity."
+
+                else:
+                    emoji_meaning = "Market activity detected"
+                    next_action = "Observe price behavior."
                 # ===============================
                 # HIGH PROBABILITY ALERTS
                 # ===============================
@@ -678,10 +731,14 @@ async def scan_all():
                         trap_tag = "🐻 SHORT TRAP" if bullish_trap else ""
                         alert_text = (
                             f"{stars} {emoji_stack} {formatted_symbol}\n"
+                            f"{emoji_meaning}\n\n"
+                            f"Next Step: {next_action}\n\n"
                             f"Potential Bullish Reversal {trap_tag}\n"
                             f"Sweep Strength: {sweep_strength}/10\n"
                             f"Funding Rate: {funding_text} ({funding_trend})\n\n"
                             f"Liquidity Grab Below PDL\n"
+                            f"Target Liquidity: {target}\n"
+                            f"Distance To Target: {target_distance:.2f}%\n\n"
                             f"PDH: {prev_day_high}\n"
                             f"PDL: {prev_day_low}\n\n"
                             f"{approaching}\n"
@@ -694,10 +751,14 @@ async def scan_all():
                         trap_tag = "🐂 LONG TRAP" if bearish_trap else ""
                         alert_text = (
                             f"{stars} {emoji_stack} {formatted_symbol}\n"
+                            f"{emoji_meaning}\n\n"
+                            f"Next Step: {next_action}\n\n"
                             f"Potential Bearish Reversal {trap_tag}\n"
                             f"Sweep Strength: {sweep_strength}/10\n"
                             f"Funding Rate: {funding_text} ({funding_trend})\n\n"
                             f"Liquidity Grab Above PDH\n"
+                            f"Target Liquidity: {target}\n"
+                            f"Distance To Target: {target_distance:.2f}%\n\n"
                             f"PDH: {prev_day_high}\n"
                             f"PDL: {prev_day_low}\n\n"
                             f"{approaching}\n"
@@ -710,6 +771,8 @@ async def scan_all():
                         direction = "Bullish Continuation" if structure == "Bullish" else "Bearish Continuation"
                         alert_text = (
                             f"{stars} {emoji_stack} {formatted_symbol}\n"
+                            f"{emoji_meaning}\n\n"
+                            f"Next Step: {next_action}\n\n"
                             f"High Probability {direction}\n\n"
                             f"Price: {current_price}\n"
                             f"Funding Rate: {funding_text} ({funding_trend})\n\n"
@@ -720,6 +783,8 @@ async def scan_all():
                             f"• Volatility: {volatility_state}\n\n"
                             f"Model Action: {model_action}\n"
                             f"Instruction: {model_instruction}\n\n"
+                            f"Target Liquidity: {target}\n"
+                            f"Distance To Target: {target_distance:.2f}%\n\n"
                             f"PDH: {prev_day_high}\n"
                             f"PDL: {prev_day_low}\n\n"
                             f"{liquidity_bias}\n"
@@ -751,6 +816,8 @@ async def scan_all():
                         f"• Volatility: {volatility_state}\n\n"
                         f"Model Action: {model_action}\n"
                         f"Instruction: {model_instruction}\n\n"
+                        f"Target Liquidity: {target}\n"
+                        f"Distance To Target: {target_distance:.2f}%\n\n"
                         f"PDH: {prev_day_high}\n"
                         f"PDL: {prev_day_low}\n\n"
                         f"{liquidity_bias}\n"
@@ -776,6 +843,8 @@ async def scan_all():
                         f"• Behavior: {behavior}\n"
                         f"• Volume: {volume_state}\n"
                         f"• Volatility: {volatility_state}\n\n"
+                        f"Target Liquidity: {target}\n"
+                        f"Distance To Target: {target_distance:.2f}%\n\n"
                         f"PDH: {prev_day_high}\n"
                         f"PDL: {prev_day_low}\n\n"
                         f"{liquidity_bias}\n"
