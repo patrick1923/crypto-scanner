@@ -147,6 +147,7 @@ async def scan_all():
         await exchange.load_markets()
 
         print("🔄 Starting Liquidity Radar Scan.")
+        scan_time = datetime.utcnow().isoformat()
 
         separator = "\n━━━━━━━━━━━━━━━━━━━━\n"
 
@@ -219,23 +220,7 @@ async def scan_all():
                 prev_day_high = daily_levels[symbol]['high']
                 prev_day_low = daily_levels[symbol]['low']
                 
-                # ===============================
-                # DISTANCE FROM DAILY LIQUIDITY
-                # ===============================
-
-                distance_from_pdh = abs(current_price - prev_day_high) / prev_day_high
-                distance_from_pdl = abs(current_price - prev_day_low) / prev_day_low
                 
-                target = None
-                target_distance = None
-
-                if structure == "Bullish":
-                    target = prev_day_high
-                    target_distance = (prev_day_high - current_price) / current_price * 100
-
-                elif structure == "Bearish":
-                    target = prev_day_low
-                    target_distance = (current_price - prev_day_low) / current_price * 100
                 # ===============================
                 # FETCH 15m DATA
                 # ===============================
@@ -283,8 +268,6 @@ async def scan_all():
                 # RANGE EXPANSION FILTER
                 # ===============================
 
-                current_range = last['h'] - last['l']
-                range_expansion = current_range > (avg_range * 1.2)
 
                 volume_ratio = last['v'] / avg_volume
                 volatility_ratio = (last['h'] - last['l']) / avg_range
@@ -381,7 +364,23 @@ async def scan_all():
                     else "Contracting" if volatility_ratio < 0.8
                     else "Stable"
                 )
+                # ===============================
+                # DISTANCE FROM DAILY LIQUIDITY
+                # ===============================
+
+                distance_from_pdh = abs(current_price - prev_day_high) / prev_day_high
+                distance_from_pdl = abs(current_price - prev_day_low) / prev_day_low
                 
+                target = None
+                target_distance = None
+
+                if structure == "Bullish":
+                    target = prev_day_high
+                    target_distance = (prev_day_high - current_price) / current_price * 100
+
+                elif structure == "Bearish":
+                    target = prev_day_low
+                    target_distance = (current_price - prev_day_low) / current_price * 100
                 
                 # ===============================
                 # BREAKOUT PRESSURE DETECTION
@@ -427,7 +426,6 @@ async def scan_all():
                     and impulse_strength == "Strong Expansion"
                     and volume_ratio > 1.3
                     and volatility_ratio > 1.2
-                    and range_expansion
                 )
                 # ===============================
                 # APPROACHING LIQUIDITY
@@ -643,7 +641,21 @@ async def scan_all():
                 # Ignore strong signals if too far from liquidity
                 if stars in ["⭐⭐", "⭐⭐⭐"] and far_from_liquidity:
                     continue
+                
+                if signal_score >=2:
 
+                    log_liquidity_context(
+                        symbol=symbol,
+                        price=current_price,
+                        signal=signal_type,
+                        score=signal_score,
+                        funding=funding_rate,
+                        volume_ratio=volume_ratio,
+                        volatility_ratio=volatility_ratio,
+                        target=target,
+                        distance=target_distance,
+                        scan_time=scan_time
+                    )
 
                 
 
@@ -790,11 +802,21 @@ async def scan_all():
                             f"{liquidity_bias}\n"
                         )
 
-                    # append to alerts for Telegram
                     alerts.append(alert_text)
                     alerts.append(separator)
 
-                    # also send to Binance Square
+                    log_liquidity_context(
+                        symbol=symbol,
+                        price=current_price,
+                        signal=signal_type,
+                        score=signal_score,
+                        funding=funding_rate,
+                        volume_ratio=volume_ratio,
+                        volatility_ratio=volatility_ratio,
+                        target=target,
+                        distance=target_distance
+                    )
+
                     send_binance_square(alert_text)
                     continue
                 # ===============================
